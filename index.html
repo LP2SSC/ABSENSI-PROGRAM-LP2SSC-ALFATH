@@ -547,7 +547,7 @@ function JoinRoom({ onJoin, onAdminHub }) {
     h("div", { style: cardStyle }, [
       h("div", { style: { textAlign: "center", marginBottom: 20 } }, [
         h("div", { style: { width: 64, height: 64, borderRadius: 20, background: tab === "admin" ? "#0f172a" : "#0891b2", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 28, margin: "0 auto 12px" } }, tab === "admin" ? "🔒" : "📚"),
-        h("div", { style: { fontSize: 22, fontWeight: 900, letterSpacing: "-0.02em" } }, "Absensi Multi-Kelas"),
+        h("div", { style: { fontSize: 22, fontWeight: 900, letterSpacing: "-0.02em" } }, "ABSENSI KEGIATAN"),
         h("div", { style: { fontSize: 12, fontWeight: 600, color: "#94a3b8", marginTop: 6, letterSpacing: "0.08em" } }, tab === "admin" ? "MODE ADMIN — TEMPLATE UMUM" : "MASUK DENGAN KODE KELAS")
       ]),
 
@@ -607,7 +607,7 @@ function JoinRoom({ onJoin, onAdminHub }) {
 
       error && h("div", { style: { marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", fontSize: 13, fontWeight: 700, textAlign: "center" } }, "⚠️ " + error),
 
-      h("div", { style: { marginTop: 20, textAlign: "center", fontSize: 10, color: "#cbd5e1", fontWeight: 600, letterSpacing: "0.08em" } }, "ABSENSI LP2SSC • MULTI-KELAS")
+      h("div", { style: { marginTop: 20, textAlign: "center", fontSize: 10, color: "#cbd5e1", fontWeight: 600, letterSpacing: "0.08em" } }, "ABSENSI LP2SSC • KEGIATAN KHUSUS")
     ])
   ]);
 }
@@ -673,6 +673,16 @@ function AbsensiApp() {
   const [dashWholeMonth, setDashWholeMonth] = useState(true);
   const [dashWeeks, setDashWeeks] = useState([1,2,3,4]);
   const [dashBatchKey, setDashBatchKey] = useState(() => batchKey);
+  const [showSalinRekapMenu, setShowSalinRekapMenu] = useState(false);
+  const [showBelumAbsen, setShowBelumAbsen] = useState(false);
+const [belumAbsenSearch, setBelumAbsenSearch] = useState("");
+const [salinRekapRange, setSalinRekapRange] = useState("1w");
+const [salinRekapStart, setSalinRekapStart] = useState(() => dateOffsetStr(new Date(), -6));
+const [salinRekapEnd, setSalinRekapEnd] = useState(() => toInputDate(new Date()));
+const [salinRekapSelected, setSalinRekapSelected] = useState({});
+const [salinRekapBusy, setSalinRekapBusy] = useState(false);
+const [salinRekapMonth, setSalinRekapMonth] = useState(() => new Date().getMonth());
+const [salinRekapYear, setSalinRekapYear] = useState(() => new Date().getFullYear());
   const [appMode, setAppMode] = useState(() => {
     try {
       if (localStorage.getItem("absensi_prefer_admin") === "1") {
@@ -1537,6 +1547,15 @@ useEffect(() => {
     return c;
   }, [attendance, list]);
   const belum = list.length - (counts.HADIR + counts.SAKIT + counts.IZIN + counts.ALFA);
+  const belumAbsenList = useMemo(
+  () => list.filter(n => !normalizeStatus(attendance[n])),
+  [list, attendance]
+);
+const belumAbsenFiltered = useMemo(() => {
+  const q = belumAbsenSearch.trim().toLowerCase();
+  if (!q) return belumAbsenList;
+  return belumAbsenList.filter(n => n.toLowerCase().includes(q));
+}, [belumAbsenList, belumAbsenSearch]);
 
   const openIzinPopup = (name) => { setIzinCustomTemp(""); setIzinPopup(name); };
   const applyIzinReason = (name, reason) => {
@@ -2161,6 +2180,112 @@ const applyBulkIzin = () => {
     downloadSpreadsheetXml(sheet, `Rekap_${String(bl).replace(/\s/g,"_")}_${start}_sd_${end}.xls`);
     toast("📥 XLS diunduh");
   };
+  const MONTH_NAMES_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+
+const buildRekapText = async (batchKeyForRekap, dateList) => {
+  const { names, matrix } = await buildMatrixForBatch(batchKeyForRekap, dateList);
+  if (!names.length) return null;
+
+  const p = programOfBatch(batchKeyForRekap);
+  const s = subOfBatch(batchKeyForRekap);
+  const label = getProgramLabel(programConfig, p) + (s !== "_none" ? " · " + getSubLabel(programConfig, p, s) : "");
+
+  const d0 = dateList[0], dN = dateList[dateList.length - 1];
+  const [y0, m0, day0] = d0.split("-").map(Number);
+  const [yN, mN, dayN] = dN.split("-").map(Number);
+  let dateLabel;
+  if (y0 === yN && m0 === mN) dateLabel = `${day0}-${dayN}`;
+  else if (y0 === yN) dateLabel = `${day0} ${MONTH_NAMES_ID[m0-1]} - ${dayN} ${MONTH_NAMES_ID[mN-1]}`;
+  else dateLabel = `${day0}/${m0}/${y0} - ${dayN}/${mN}/${yN}`;
+
+  let t = `Rekapan (${label})\n`;
+  t += `Tanggal: ${dateLabel}\n`;
+  names.forEach((name, i) => {
+    const emojis = dateList.map(ds => {
+      const st = matrix[name] && matrix[name][ds];
+      if (st === "HADIR") return "✅";
+      if (st === "SAKIT") return "🆘";
+      if (st === "IZIN") return "ℹ️";
+      if (st === "ALFA") return "❌";
+      return "⬜";
+    }).join("");
+    t += `${i + 1}. ${name} ${emojis}\n`;
+  });
+  t += `\n✅ Hadir · 🆘 Sakit · ℹ️ Izin · ❌ Alfa · ⬜ Belum`;
+  return t;
+};
+
+const handleSalinRekapRangeChange = (range) => {
+  setSalinRekapRange(range);
+  if (range === "custom") {
+    let dl = [];
+    try { dl = getDashboardDateList(); } catch {}
+    if (!dl.length) dl = [dateOffsetStr(new Date(), -6), toInputDate(new Date())];
+    setSalinRekapStart(dl[0]);
+    setSalinRekapEnd(dl[dl.length - 1]);
+  }
+};
+
+const doSalinRekap = async () => {
+  setSalinRekapBusy(true);
+  try {
+    let dateList = [];
+    const today = new Date();
+
+    if (salinRekapRange === "1w") {
+      for (let i = 6; i >= 0; i--) dateList.push(dateOffsetStr(today, -i));
+    } else if (salinRekapRange === "2w") {
+      for (let i = 13; i >= 0; i--) dateList.push(dateOffsetStr(today, -i));
+    } else if (salinRekapRange === "1m") {
+      const daysInMonth = new Date(salinRekapYear, salinRekapMonth + 1, 0).getDate();
+      const s = `${salinRekapYear}-${String(salinRekapMonth+1).padStart(2,"0")}-01`;
+      const e = `${salinRekapYear}-${String(salinRekapMonth+1).padStart(2,"0")}-${String(daysInMonth).padStart(2,"0")}`;
+      dateList = eachDateStr(s, e);
+    } else {
+      if (!salinRekapStart || !salinRekapEnd) { toast("⚠️ Pilih tanggal mulai dan akhir"); setSalinRekapBusy(false); return; }
+      if (salinRekapStart > salinRekapEnd) { toast("⚠️ Tanggal mulai harus sebelum akhir"); setSalinRekapBusy(false); return; }
+      dateList = eachDateStr(salinRekapStart, salinRekapEnd);
+    }
+
+    if (!dateList.length) { toast("⚠️ Tidak ada tanggal"); setSalinRekapBusy(false); return; }
+
+    // Ambil batch yang dicentang user
+const selectedKeys = Object.keys(salinRekapSelected).filter(k => salinRekapSelected[k]);
+if (!selectedKeys.length) {
+  toast("⚠️ Pilih minimal 1 batch dulu");
+  setSalinRekapBusy(false);
+  return;
+}
+
+let text = "";
+if (selectedKeys.length === 1) {
+  text = await buildRekapText(selectedKeys[0], dateList);
+  if (!text) { toast("⚠️ Tidak ada siswa di batch ini"); setSalinRekapBusy(false); return; }
+} else {
+  const blocks = [];
+  for (const k of selectedKeys) {
+    try {
+      const b = await buildRekapText(k, dateList);
+      if (b) blocks.push(b);
+    } catch {}
+  }
+  if (!blocks.length) { toast("⚠️ Tidak ada data"); setSalinRekapBusy(false); return; }
+  text = blocks.join("\n\n━━━━━━━━━━━━━━━\n\n");
+}
+
+    const rangeLabels = { "1w": "1 Minggu", "2w": "2 Minggu", "1m": "1 Bulan", "custom": "Custom" };
+    setPreviewText(text);
+    setPreviewFormat("Rekap " + rangeLabels[salinRekapRange]);
+    setShowSalinRekapMenu(false);
+    setShowPreview(true);
+
+    const ok = await copyText(text);
+    toast(ok ? "✅ Rekap disalin!" : "⚠️ Klik Kirim untuk WhatsApp");
+  } catch (err) {
+    toast("⚠️ Gagal menyusun rekap");
+  }
+  setSalinRekapBusy(false);
+};
   const exportAllProgramsXLS = async () => {
     if (!isAdmin) return toast("⚠️ Hanya admin");
     if (!allBatchKeys.length) return toast("⚠️ Belum ada batch");
@@ -2854,6 +2979,10 @@ const applyBulkIzin = () => {
 
         h("div", { style:{ marginTop:20, display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" } }, [
         h("button", { onClick: openBulkIzin, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(59,130,246,.35)", fontWeight:700, fontSize:13, color:"#1e40af", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer", display:"flex", alignItems:"center", gap:6 } }, "ℹ️ Izin Masal"),
+        h("button", {
+  onClick: () => { setBelumAbsenSearch(""); setShowBelumAbsen(true); },
+  style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(251,146,60,.4)", fontWeight:700, fontSize:13, color:"#ea580c", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer", display:"flex", alignItems:"center", gap:6 }
+}, ["👀 Belum Absen", belum > 0 ? " (" + belum + ")" : ""]),
           isAdmin && h("button", { onClick: openAlfaConfirm, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(239,68,68,.25)", fontWeight:700, fontSize:13, color:"#b91c1c", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer" } }, "⚠ Alfakan"),
           isAdmin && h("button", { onClick: doUndo, disabled: !undoStack.length, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color:"rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor: undoStack.length ? "pointer" : "not-allowed", opacity: undoStack.length ? 1 : 0.4 } }, "↶ Undo"),
           isAdmin && h("button", { onClick: doRedo, disabled: !redoStack.length, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color:"rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor: redoStack.length ? "pointer" : "not-allowed", opacity: redoStack.length ? 1 : 0.4 } }, "↷ Redo"),
@@ -2863,7 +2992,11 @@ const applyBulkIzin = () => {
           isAdmin && h("button", { onClick: () => { setDashBatchKey(batchKey); openDashboard(batchKey); }, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color:"rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer" } }, "📊 Dashboard"),
           isAdmin && h("button", { onClick: () => { setShowManage(v => !v); setShowAddForm(false); }, style: { height:44, padding:"0 18px", borderRadius:12, background: showManage ? theme.accent : "#fff", border: showManage ? "none" : "1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color: showManage ? "#fff" : "rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer" } }, showManage ? "✓ Kelola Anggota" : "👥 Kelola Anggota"),
           h("div", { style: { marginLeft:"auto", fontSize:12, fontWeight:600, color:"rgba(0,0,0,.4)", display:"flex", alignItems:"center", gap:8 } }, [
-            h("span", { style: { padding:"4px 10px", borderRadius:999, fontSize:11, fontWeight:700, border: `1px solid ${belum ? "#fde68a" : "#a7f3d0"}`, background: belum ? "#fffbeb" : "#ecfdf5", color: belum ? "#b45309" : "#047857" } }, loadingFb ? "Memuat..." : (belum ? `${belum} belum absen` : "Semua sudah diabsen")),
+            h("span", {
+  onClick: () => { if (belum > 0) { setBelumAbsenSearch(""); setShowBelumAbsen(true); } },
+  title: belum > 0 ? "Klik untuk lihat siapa saja" : "Semua sudah diabsen",
+  style: { padding:"4px 10px", borderRadius:999, fontSize:11, fontWeight:700, border: `1px solid ${belum ? "#fde68a" : "#a7f3d0"}`, background: belum ? "#fffbeb" : "#ecfdf5", color: belum ? "#b45309" : "#047857", cursor: belum > 0 ? "pointer" : "default" }
+}, loadingFb ? "Memuat..." : (belum ? `${belum} belum absen` : "Semua sudah diabsen")),
             h("span", { style:{ fontSize:11, letterSpacing:"0.1em" } }, `${list.length} SISWA`)
           ])
         ]),
@@ -3281,9 +3414,19 @@ const applyBulkIzin = () => {
               })
             ),
             h("div", { style:{ display:"flex", flexWrap:"wrap", gap:8 } }, [
-              h("button", { onClick: () => openDashboard(dashBatchKey), style: { height:40, padding:"0 16px", borderRadius:10, border:"none", background: getProgramTheme(programConfig, programOfBatch(dashBatchKey)).accent, color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" } }, "Tampilkan Rekap"),
-              h("button", { onClick: exportAllProgramsXLS, style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #cbd5e1", background:"#fff", color:"#0f172a", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Semua")
-            ])
+  h("button", { onClick: () => openDashboard(dashBatchKey), style: { height:40, padding:"0 16px", borderRadius:10, border:"none", background: getProgramTheme(programConfig, programOfBatch(dashBatchKey)).accent, color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" } }, "Tampilkan Rekap"),
+  h("button", {
+  onClick: () => {
+    // Auto-pilih batch yang sedang aktif di dashboard, kalau belum ada pilihan
+    if (Object.keys(salinRekapSelected).filter(k => salinRekapSelected[k]).length === 0) {
+      setSalinRekapSelected({ [dashBatchKey]: true });
+    }
+    setShowSalinRekapMenu(true);
+  },
+  style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #cbd5e1", background:"#fff", color:"#0f172a", fontWeight:700, fontSize:13, cursor:"pointer" }
+}, "📋 Salin Rekap"),
+  h("button", { onClick: exportAllProgramsXLS, style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #cbd5e1", background:"#fff", color:"#0f172a", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Semua")
+])
           ])
         ]),
         dashboardLoading && h("div", { style:{ textAlign:"center", padding:24, color:"#64748b", fontWeight:600 } }, "Memuat..."),
@@ -3334,6 +3477,196 @@ const applyBulkIzin = () => {
         ])
       ])
     ]),
+    
+    showSalinRekapMenu && h("div", { style: { position:"fixed", inset:0, zIndex:220, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
+  h("div", { onClick: () => { if (!salinRekapBusy) setShowSalinRekapMenu(false); }, style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
+  h("div", { style: { position:"relative", width:"100%", maxWidth:440, maxHeight:"90vh", overflowY:"auto", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease" } }, [
+    h("button", { onClick: () => { if (!salinRekapBusy) setShowSalinRekapMenu(false); }, style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
+    h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:6, paddingRight:30 } }, "📋 Salin Rekap"),
+    h("div", { style:{ fontSize:13, color:"#64748b", marginBottom:16, lineHeight:1.45 } }, "Pilih rentang tanggal. Format: per siswa dengan emoji status per hari."),
+
+    h("div", { style:{ display:"grid", gap:6, marginBottom:12 } },
+      [
+        { id: "1w", label: "1 Minggu", desc: "7 hari terakhir" },
+        { id: "2w", label: "2 Minggu", desc: "14 hari terakhir" },
+        { id: "1m", label: "1 Bulan", desc: "Bulan " + MONTH_NAMES_ID[salinRekapMonth] + " " + salinRekapYear },
+        { id: "custom", label: "Custom", desc: "Pilih tanggal mulai & akhir" }
+      ].map(opt =>
+        h("button", {
+          key: opt.id,
+          onClick: () => handleSalinRekapRangeChange(opt.id),
+          style: { display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12, width:"100%", textAlign:"left", cursor:"pointer",
+            border: salinRekapRange === opt.id ? "2px solid #3b82f6" : "1px solid #e2e8f0",
+            background: salinRekapRange === opt.id ? "#eff6ff" : "#fff" }
+        }, [
+          h("div", { style:{ width:20, height:20, borderRadius:999, flexShrink:0, background:"#fff",
+            border: salinRekapRange === opt.id ? "6px solid #3b82f6" : "2px solid #cbd5e1" } }),
+          h("div", { style:{ flex:1 } }, [
+            h("div", { style:{ fontSize:13, fontWeight:800, color:"#0f172a" } }, opt.label),
+            h("div", { style:{ fontSize:11, fontWeight:600, color:"#94a3b8" } }, opt.desc)
+          ])
+        ])
+      )
+    ),
+
+    salinRekapRange === "1m" && h("div", { style:{ display:"flex", gap:8, marginBottom:12 } }, [
+      h("select", {
+        value: salinRekapMonth,
+        onChange: e => setSalinRekapMonth(Number(e.target.value)),
+        style: { flex:1, height:40, padding:"0 10px", borderRadius:10, border:"1px solid #cbd5e1", fontSize:13, fontWeight:700, background:"#fff", outline:"none" }
+      }, MONTH_NAMES_ID.map((m, i) => h("option", { key: i, value: i }, m))),
+      h("select", {
+        value: salinRekapYear,
+        onChange: e => setSalinRekapYear(Number(e.target.value)),
+        style: { width:100, height:40, padding:"0 10px", borderRadius:10, border:"1px solid #cbd5e1", fontSize:13, fontWeight:700, background:"#fff", outline:"none" }
+      }, (() => { const now = new Date().getFullYear(); const o = []; for (let y = now; y >= now-2; y--) o.push(h("option", { key:y, value:y }, y)); return o; })())
+    ]),
+
+    salinRekapRange === "custom" && h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 } }, [
+      h("div", null, [
+        h("div", { style:{ fontSize:11, fontWeight:700, color:"#94a3b8", marginBottom:4 } }, "DARI TANGGAL"),
+        h("input", { type:"date", value: salinRekapStart, onChange: e => setSalinRekapStart(e.target.value), style: { width:"100%", height:40, padding:"0 10px", borderRadius:10, border:"1px solid #cbd5e1", fontSize:13, fontWeight:600, outline:"none" } })
+      ]),
+      h("div", null, [
+        h("div", { style:{ fontSize:11, fontWeight:700, color:"#94a3b8", marginBottom:4 } }, "SAMPAI TANGGAL"),
+        h("input", { type:"date", value: salinRekapEnd, onChange: e => setSalinRekapEnd(e.target.value), style: { width:"100%", height:40, padding:"0 10px", borderRadius:10, border:"1px solid #cbd5e1", fontSize:13, fontWeight:600, outline:"none" } })
+      ])
+    ]),
+
+    h("div", { style:{ border:"1px solid #e2e8f0", borderRadius:14, padding:12, marginBottom:16, background:"#fafbff" } }, [
+  h("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 } }, [
+    h("div", { style:{ fontSize:11, fontWeight:800, color:"#64748b", letterSpacing:"0.06em" } }, "PILIH BATCH"),
+    h("div", { style:{ display:"flex", gap:6 } }, [
+      h("button", {
+        onClick: () => {
+          const all = {};
+          allBatchEntries.forEach(e => { all[e.key] = true; });
+          setSalinRekapSelected(all);
+        },
+        style: { height:28, padding:"0 12px", borderRadius:8, border:"1px solid #cbd5e1", background:"#fff", fontSize:11, fontWeight:700, cursor:"pointer", color:"#0f172a" }
+      }, "✓ Pilih Semua"),
+      h("button", {
+        onClick: () => setSalinRekapSelected({}),
+        style: { height:28, padding:"0 12px", borderRadius:8, border:"1px solid #cbd5e1", background:"#fff", fontSize:11, fontWeight:700, cursor:"pointer", color:"#64748b" }
+      }, "Kosongkan")
+    ])
+  ]),
+  allBatchEntries.length === 0 && h("div", { style:{ padding:16, textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:600 } }, "Belum ada batch"),
+  h("div", { style:{ maxHeight:220, overflowY:"auto", display:"flex", flexDirection:"column", gap:4 } },
+    ...allBatchEntries.map(e => {
+      const checked = !!salinRekapSelected[e.key];
+      const th = getProgramTheme(programConfig, e.program);
+      return h("label", {
+        key: e.key,
+        style: { display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:10, cursor:"pointer",
+          background: checked ? "#eff6ff" : "#fff",
+          border: checked ? "1.5px solid #93c5fd" : "1px solid #e2e8f0",
+          transition: "all .15s" }
+      }, [
+        h("input", {
+          type:"checkbox", checked,
+          onChange: () => setSalinRekapSelected(prev => ({ ...prev, [e.key]: !prev[e.key] })),
+          style: { width:18, height:18, accentColor: th.accent }
+        }),
+        h("span", { style:{ padding:"2px 8px", borderRadius:999, fontSize:10, fontWeight:900, background: th.accentLight, color: th.accentDark, flexShrink:0 } }, e.program + "·" + e.sub),
+        h("span", { style:{ fontSize:12, fontWeight:700, color:"#1e293b", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, e.label)
+      ]);
+    })
+  ),
+  h("div", { style:{ fontSize:11, fontWeight:800, color:"#1e40af", marginTop:10, paddingTop:8, borderTop:"1px solid #e2e8f0" } },
+    Object.keys(salinRekapSelected).filter(k => salinRekapSelected[k]).length + " dari " + allBatchEntries.length + " batch terpilih")
+]),
+
+    h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } }, [
+      h("button", { onClick: () => setShowSalinRekapMenu(false), disabled: salinRekapBusy, style: { borderRadius:999, background:"#f4f4f5", border:"1px solid #e4e4e7", padding:"12px 16px", fontSize:13, fontWeight:700, color:"#3f3f46", cursor: salinRekapBusy ? "wait" : "pointer", opacity: salinRekapBusy ? 0.6 : 1 } }, "Batal"),
+      h("button", { onClick: doSalinRekap, disabled: salinRekapBusy, style: { borderRadius:999, background:"#25D366", border:"none", color:"#fff", padding:"12px 16px", fontSize:13, fontWeight:800, cursor: salinRekapBusy ? "wait" : "pointer", opacity: salinRekapBusy ? 0.6 : 1 } }, salinRekapBusy ? "Menyusun..." : "📋 Salin")
+    ])
+  ])
+]),
+showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
+  h("div", { onClick: () => setShowBelumAbsen(false), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
+  h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
+    h("button", { onClick: () => setShowBelumAbsen(false), style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
+
+    h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:4, paddingRight:30 } }, "👀 Belum Absen"),
+    h("div", { style:{ fontSize:12, color:"#64748b", marginBottom:14, fontWeight:600, lineHeight: 1.5 } }, [batchLabel, " · ", formatDateAbsensi(date)]),
+
+    belumAbsenList.length === 0
+      ? h("div", { style:{ padding:36, textAlign:"center", background:"#f0fdf4", border:"1px solid #a7f3d0", borderRadius:14 } }, [
+          h("div", { style:{ fontSize: 44, marginBottom: 6 } }, "✅"),
+          h("div", { style:{ fontSize:15, fontWeight:800, color:"#047857" } }, "Semua sudah diabsen!"),
+          h("div", { style:{ fontSize:12, color:"#16a34a", marginTop:4, fontWeight:600 } }, `${list.length} dari ${list.length} siswa`),
+        ])
+      : h("div", null, [
+          isAdmin && belumAbsenList.length > 0 && h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 } }, [
+            h("button", {
+              onClick: () => { setShowBelumAbsen(false); setTimeout(() => markAllHadir(), 100); },
+              style: { height:40, borderRadius:10, border:"none", background:"#22c55e", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }
+            }, `✅ Semua Hadir (${belumAbsenList.length})`),
+            h("button", {
+              onClick: () => { setShowBelumAbsen(false); setTimeout(() => openAlfaConfirm(), 100); },
+              style: { height:40, borderRadius:10, border:"none", background:"#ef4444", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }
+            }, `❌ Alfakan (${belumAbsenList.length})`)
+          ]),
+          
+          !isAdmin && (() => {
+  const open = isDateActiveForCurrentSub() && isStudentAbsenOpen();
+  const libur = !isDateActiveForCurrentSub();
+  return h("div", {
+    style: {
+      padding: "10px 12px", borderRadius: 10, marginBottom: 10, fontSize: 12, fontWeight: 700, textAlign: "center",
+      background: open ? "#f0fdf4" : "#fef2f2",
+      border: open ? "1px solid #a7f3d0" : "1px solid #fecaca",
+      color: open ? "#047857" : "#991b1b",
+      lineHeight: 1.5
+    }
+  }, open
+    ? "✅ Absen dibuka — klik tombol di kanan untuk isi status"
+    : (libur
+        ? "📴 Hari ini sub ini tidak aktif (libur) — hanya bisa lihat"
+        : "⛔ Absen sudah ditutup (" + schedText + ") — hanya bisa lihat")
+  );
+})(),
+          h("input", {
+            type: "text", value: belumAbsenSearch,
+            onChange: e => setBelumAbsenSearch(e.target.value),
+            placeholder: "Cari nama...",
+            style: { width: "100%", height: 38, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none", marginBottom: 10 }
+          }),
+
+          h("div", { style:{ flex:1, minHeight: 120, overflowY:"auto", maxHeight:"48vh", border:"1px solid #e2e8f0", borderRadius:12 } },
+            belumAbsenFiltered.length === 0
+              ? h("div", { style:{ padding:20, textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:600 } }, ["Tidak ada: ", h("strong", null, `"${belumAbsenSearch}"`)])
+              : belumAbsenFiltered.map((name, i) => {
+                  const realIdx = belumAbsenList.indexOf(name);
+                  return h("div", { key: name, style:{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderBottom: i < belumAbsenFiltered.length-1 ? "1px solid #f1f5f9" : "none" } }, [
+                    h("span", { style:{ width:26, height:26, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background:"#fee2e2", color:"#dc2626" } }, realIdx + 1),
+                    h("span", { style:{ flex:1, fontWeight:700, fontSize:13, color:"#1e293b", minWidth: 0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, name),
+                    (() => {
+  const canAct = isAdmin || (
+    toInputDate(date) === toInputDate(new Date()) &&
+    isDateActiveForCurrentSub() &&
+    isStudentAbsenOpen()
+  );
+  if (!canAct) return h("span", { style:{ fontSize: 14, opacity: 0.35, flexShrink: 0 } }, "🔒");
+  return h("div", { style:{ display:"flex", gap:4, flexShrink:0 } }, [
+    h("button", { onClick: () => { setShowBelumAbsen(false); setTimeout(() => setStatus(name, "HADIR"), 60); }, title: "Hadir", style:{ width:30, height:30, borderRadius:8, border:"1px solid rgba(34,197,94,.4)", background:"#f0fdf4", cursor:"pointer", fontSize:14 } }, "✅"),
+    h("button", { onClick: () => { setShowBelumAbsen(false); setTimeout(() => setStatus(name, "IZIN"), 60); }, title: "Izin", style:{ width:30, height:30, borderRadius:8, border:"1px solid rgba(59,130,246,.4)", background:"#eff6ff", cursor:"pointer", fontSize:14 } }, "ℹ️"),
+    h("button", { onClick: () => { setShowBelumAbsen(false); setTimeout(() => setStatus(name, "SAKIT"), 60); }, title: "Sakit", style:{ width:30, height:30, borderRadius:8, border:"1px solid rgba(168,85,247,.4)", background:"#faf5ff", cursor:"pointer", fontSize:14 } }, "🆘"),
+    h("button", { onClick: () => { setShowBelumAbsen(false); setTimeout(() => setStatus(name, "ALFA"), 60); }, title: "Alfa", style:{ width:30, height:30, borderRadius:8, border:"1px solid rgba(239,68,68,.4)", background:"#fef2f2", cursor:"pointer", fontSize:14 } }, "❌")
+  ]);
+})()
+                  ]);
+                })
+          ),
+
+          h("div", { style:{ fontSize:12, fontWeight:800, color:"#dc2626", marginTop:12, textAlign:"center", padding:"8px", background:"#fef2f2", borderRadius:10 } },
+            belumAbsenFiltered.length !== belumAbsenList.length
+              ? `${belumAbsenFiltered.length} dari ${belumAbsenList.length} siswa (difilter)`
+              : `${belumAbsenList.length} siswa belum absen`)
+        ])
+  ])
+]),
 
     statusConfirm && h("div", { style: { position:"fixed", inset:0, zIndex:190, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
       h("div", { onClick: () => setStatusConfirm(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
