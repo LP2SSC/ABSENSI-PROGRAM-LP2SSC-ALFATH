@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ABSENSI MULTI-KELAS — LP2SSC</title>
 <style>
+	<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f172a">
+<meta name="application-name" content="Absensi LP2SSC">
+<meta name="mobile-web-app-capable" content="yes">
+	<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 * ,:after,:before{box-sizing:border-box;border:0 solid #e5e7eb;margin:0;padding:0}
 html,body,#root{min-height:100%;height:100%}
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;-webkit-font-smoothing:antialiased}
@@ -28,6 +34,7 @@ input:focus,select:focus{outline:none;box-shadow:none}
 <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script>
 const { useState, useEffect, useMemo, useRef, createElement: h } = React;
 
@@ -109,6 +116,7 @@ const FB_ROOT = "TEMPLATE ABSEN";
 const RESET_PASSWORD = "LP2SSC_ID";
 const DEFAULT_AUTO_OPEN_MIN = 4 * 60;
 const DEFAULT_AUTO_RESET_MIN = 10 * 60;
+const MAX_ROOM_HISTORY = 20;
 
 /* ===================== ROOM SCOPE ===================== */
 let CURRENT_ROOM = "";
@@ -266,6 +274,14 @@ function formatDateAbsensi(d) {
   const tgl = new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "long", year: "numeric" }).format(d);
   return `${hari.charAt(0).toUpperCase() + hari.slice(1)}, ${tgl}`;
 }
+function wibToday() {
+  const w = getWibParts();
+  const [y, m, d] = w.dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function wibTodayStr() {
+  return getWibParts().dateStr;
+}
 function toInputDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
@@ -374,10 +390,10 @@ function downloadJson(obj, filename) {
   } catch { return false; }
 }
 function toFbKey(name) {
-  return String(name).replace(/\\/g,"\\x5c").replace(/\./g,"\\x2e").replace(/#/g,"\\x23").replace(/\$/g,"\\x24").replace(/\[/g,"\\x5b").replace(/\]/g,"\\x5d");
+  return String(name).replace(/\\/g,"\\x5c").replace(/\./g,"\\x2e").replace(/#/g,"\\x23").replace(/\$/g,"\\x24").replace(/\[/g,"\\x5b").replace(/\]/g,"\\x5d").replace(/\//g,"\\x2f");
 }
 function fromFbKey(key) {
-  return String(key).replace(/\\x2e/g,".").replace(/\\x23/g,"#").replace(/\\x24/g,"$").replace(/\\x5b/g,"[").replace(/\\x5d/g,"]").replace(/\\x5c/g,"\\");
+  return String(key).replace(/\\x2e/g,".").replace(/\\x23/g,"#").replace(/\\x24/g,"$").replace(/\\x5b/g,"[").replace(/\\x5d/g,"]").replace(/\\x2f/g,"/").replace(/\\x5c/g,"\\");
 }
 function normalizeStatus(st) { return ["HADIR","SAKIT","IZIN","ALFA"].includes(st) ? st : null; }
 function izinEmoji(reason) {
@@ -497,7 +513,7 @@ function JoinRoom({ onJoin, onAdminHub }) {
         } catch {}
       }));
       alive.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
-      const next = alive.slice(0, 8);
+      const next = alive.slice(0, MAX_ROOM_HISTORY);
       try { localStorage.setItem("absensi_rooms_history", JSON.stringify(next)); } catch {}
       if (!cancelled) { setHistory(next); setHistoryChecking(false); }
     })();
@@ -508,14 +524,14 @@ function JoinRoom({ onJoin, onAdminHub }) {
     try {
       const existing = JSON.parse(localStorage.getItem("absensi_rooms_history") || "[]");
       const filtered = existing.filter(r => r.code !== roomCode);
-      const next = [{ code: roomCode, name: roomName, lastAt: Date.now() }, ...filtered].slice(0, 8);
+      const next = [{ code: roomCode, name: roomName, lastAt: Date.now() }, ...filtered].slice(0, MAX_ROOM_HISTORY);
       localStorage.setItem("absensi_rooms_history", JSON.stringify(next));
       setHistory(next);
     } catch {}
   };
 
-  const handleJoinAsSiswa = async () => {
-    const c = code.trim().toUpperCase();
+  const handleJoinAsSiswa = async (directCode) => {
+    const c = (typeof directCode === "string" ? directCode : code).trim().toUpperCase();
     if (!c) return setError("Kode kelas tidak boleh kosong");
     if (!/^[A-Z0-9_-]{2,24}$/.test(c)) return setError("Format kode: huruf/angka/_/- (2-24)");
     setError(""); setLoading(true);
@@ -576,7 +592,7 @@ function JoinRoom({ onJoin, onAdminHub }) {
           ...history.map(r =>
             h("button", {
               key: r.code,
-              onClick: () => { setCode(r.code); setTimeout(handleJoinAsSiswa, 50); },
+              onClick: () => handleJoinAsSiswa(r.code),
               style: { width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", marginBottom: 6, textAlign: "left" }
             }, [
               h("span", { style: { width: 32, height: 32, borderRadius: 8, background: "#cffafe", color: "#0891b2", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 10, flexShrink: 0 } }, r.code.slice(0, 4)),
@@ -614,14 +630,10 @@ function JoinRoom({ onJoin, onAdminHub }) {
 
 /* ===================== MAIN APP ===================== */
 function AbsensiApp() {
-  const [roomCode, setRoomCode] = useState(() => {
-    try { return localStorage.getItem("absensi_current_room") || ""; } catch { return ""; }
-  });
+  const [roomCode, setRoomCode] = useState("");
   const [roomName, setRoomName] = useState("");
   const [roomAdminPassword, setRoomAdminPassword] = useState(RESET_PASSWORD);
-  const [showJoinScreen, setShowJoinScreen] = useState(() => {
-    try { return !localStorage.getItem("absensi_current_room"); } catch { return true; }
-  });
+  const [showJoinScreen, setShowJoinScreen] = useState(true);
   const [showAdminHub, setShowAdminHub] = useState(false);
   const [hubRooms, setHubRooms] = useState([]);
   const [hubLoading, setHubLoading] = useState(false);
@@ -656,7 +668,7 @@ function AbsensiApp() {
   const sub = subOfBatch(batchKey);
 
   const [students, setStudents] = useState(() => loadStudentsLocal(batchKey));
-  const [date, setDate] = useState(() => new Date());
+  const [date, setDate] = useState(() => wibToday());
   const [attendance, setAttendance] = useState({});
   const [izinReasons, setIzinReasons] = useState({});
   const [loadingFb, setLoadingFb] = useState(true);
@@ -676,9 +688,11 @@ function AbsensiApp() {
   const [showSalinRekapMenu, setShowSalinRekapMenu] = useState(false);
   const [showBelumAbsen, setShowBelumAbsen] = useState(false);
 const [belumAbsenSearch, setBelumAbsenSearch] = useState("");
+const [statusListModal, setStatusListModal] = useState(null);
+const [statusListSearch, setStatusListSearch] = useState("");
 const [salinRekapRange, setSalinRekapRange] = useState("1w");
-const [salinRekapStart, setSalinRekapStart] = useState(() => dateOffsetStr(new Date(), -6));
-const [salinRekapEnd, setSalinRekapEnd] = useState(() => toInputDate(new Date()));
+const [salinRekapStart, setSalinRekapStart] = useState(() => dateOffsetStr(wibToday(), -6));
+const [salinRekapEnd, setSalinRekapEnd] = useState(() => wibTodayStr());
 const [salinRekapSelected, setSalinRekapSelected] = useState({});
 const [salinRekapBusy, setSalinRekapBusy] = useState(false);
 const [salinRekapMonth, setSalinRekapMonth] = useState(() => new Date().getMonth());
@@ -712,6 +726,10 @@ const [soundEnabled, setSoundEnabled] = useState(() => {
   try { return localStorage.getItem("absensi_sound") !== "0"; } catch { return true; }
 });
 const studentsRef = useRef([]);
+const currentBatchKeyRef = useRef(batchKey);
+const validSubRef = useRef(false);
+const programConfigRef = useRef(programConfig);
+const allBatchEntriesRef = useRef([]);
 const attendanceLoadedKey = useRef("");
 const lastStatusSnapshotRef = useRef({});
 const [studentsLoadedTick, setStudentsLoadedTick] = useState(0);
@@ -845,7 +863,7 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
     toast("↷ Redo");
   };
 
-  useEffect(() => { if (appMode === "siswa") { setDate(new Date()); setShowManage(false); } }, [appMode]);
+  useEffect(() => { if (appMode === "siswa") { setDate(wibToday()); setShowManage(false); } }, [appMode]);
 
   useEffect(() => {
     if (!programConfig.programs || !programConfig.programs.length) return;
@@ -972,7 +990,7 @@ useEffect(() => {
       if (lastWibDateRef.current === today) return;
       lastWibDateRef.current = today;
       skipNextSave.current = true;
-      setDate(new Date()); setAttendance({}); setIzinReasons({});
+setDate(wibToday()); setAttendance({}); setIzinReasons({});
       setUndoStack([]); setRedoStack([]); dirtyRef.current.clear();
       setTimeout(() => { skipNextSave.current = false; }, 300);
       toast("🌅 Hari baru (" + today + ")");
@@ -988,6 +1006,12 @@ useEffect(() => {
     dirtyRef.current.clear();
     lastStatusSnapshotRef.current = {};
   }, [dateStr, batchKey, roomCode]);
+  useEffect(() => {
+  // Auto-tutup modal "Belum Absen" saat ganti tanggal/batch/kelas
+  // biar user tidak melihat data lama
+  setShowBelumAbsen(false);
+  setBelumAbsenSearch("");
+}, [dateStr, batchKey, roomCode]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -1012,13 +1036,12 @@ useEffect(() => {
   }, [saveStatus, syncing]);
 
   useEffect(() => {
-if (!roomCode || !scheduleReady) return;
-const fillAlfaAtClose = async () => {
+  if (!roomCode || !scheduleReady) return;
+  const fillAlfaAtClose = async () => {
     if (autoResetRunning.current || !navigator.onLine) return;
-    if (!allBatchEntries.length) return;
+    if (!allBatchEntriesRef.current.length) return;
     autoResetRunning.current = true;
     try {
-      // ===== FETCH FRESH dari Firebase (jangan pakai state lokal) =====
       const [openSnap, closeSnap, enabledSnap, subSchedSnap] = await Promise.all([
         db.ref(metaPath("auto_open_hour")).once("value"),
         db.ref(metaPath("auto_reset_hour")).once("value"),
@@ -1029,24 +1052,20 @@ const fillAlfaAtClose = async () => {
       const freshClose = scheduleToMin(closeSnap.val(), DEFAULT_AUTO_RESET_MIN);
       const freshEnabled = enabledSnap.val() === true || enabledSnap.val() === "true" || enabledSnap.val() === 1;
       const freshSubSchedules = subSchedSnap.val() || {};
-      // ===============================================================
-
       const wib = getWibParts();
       const nowMin = wib.hour * 60 + wib.minute;
       const today = wib.dateStr;
       let totalFilled = 0;
       let touchedCurrent = false;
-      for (const ent of allBatchEntries) {
+      for (const ent of allBatchEntriesRef.current) {
         const [yy0, mm0, dd0] = today.split("-").map(Number);
         const todayDow = new Date(yy0, mm0 - 1, dd0).getDay();
-        // ← pakai fresh values, bukan state
         const sched = resolveScheduleForBatch(ent.key, freshSubSchedules, freshOpen, freshClose, freshEnabled, todayDow);
         if (!sched.enabled) continue;
         if (!isTimePastClose(nowMin, sched.open, sched.close)) continue;
-        // skip kalau hari ini sub tidak aktif
         {
           const pId = programOfBatch(ent.key), sId = subOfBatch(ent.key);
-          const pObj = (programConfig.programs || []).find(x => x.id === pId);
+          const pObj = (programConfigRef.current.programs || []).find(x => x.id === pId);
           const sObj = pObj && (pObj.subs || []).find(x => String(x.id) === String(sId));
           const subDays = (sObj && Array.isArray(sObj.days) && sObj.days.length) ? sObj.days : ALL_DAYS;
           const [yy, mm, dd] = today.split("-").map(Number);
@@ -1078,28 +1097,23 @@ const fillAlfaAtClose = async () => {
         names.forEach(n => { if (!existingByRealName[n]) { updates[toFbKey(n)] = { status: "ALFA", reason: "" }; changed = true; totalFilled++; } });
         if (changed && Object.keys(updates).length) await attRef.update(updates);
         await db.ref(metaPath("last_auto_alfa_v2/" + ent.key)).set(today);
-        if (ent.key === batchKey) touchedCurrent = true;
+        if (ent.key === currentBatchKeyRef.current) touchedCurrent = true;
       }
-      if (touchedCurrent && validSub) {
+      if (touchedCurrent && validSubRef.current) {
         skipNextSave.current = true;
-        setAttendance(prev => { const n = { ...prev }; students.forEach(s => { if (!n[s]) n[s] = "ALFA"; }); return n; });
+        setAttendance(prev => { const n = { ...prev }; studentsRef.current.forEach(s => { if (!n[s]) n[s] = "ALFA"; }); return n; });
         setTimeout(() => { skipNextSave.current = false; }, 300);
       }
       if (totalFilled > 0) {
         toast("✅ Jam tutup — " + totalFilled + " ditandai ALFA");
-        try {
-          if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("🔔 Absensi ditutup", { body: totalFilled + " siswa otomatis ditandai ALFA" });
-          }
-        } catch {}
       }
     } catch (err) {}
     autoResetRunning.current = false;
   };
-    fillAlfaAtClose();
-    const id = setInterval(fillAlfaAtClose, 60000);
-      return () => clearInterval(id);
-}, [roomCode, scheduleReady, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, allBatchEntries, batchKey, students, validSub, programConfig]);
+  fillAlfaAtClose();
+  const id = setInterval(fillAlfaAtClose, 60000);
+  return () => clearInterval(id);
+}, [roomCode, scheduleReady]);
 
   const openScheduleSettings = () => {
     setAutoOpenMinDraft(fmtSchedule(autoOpenMin));
@@ -1329,7 +1343,7 @@ const fillAlfaAtClose = async () => {
 
   const openSettings = () => {
     setConfigDraft(normalizeProgramConfig(JSON.parse(JSON.stringify(programConfig))));
-    setGeneralDraft({ ...generalSettings, adminPassword: roomAdminPassword });
+    setGeneralDraft({ ...generalSettings });
     setIzinDraft([...izinOptions]);
     setNewIzinDraft("");
     setShowSettings(true);
@@ -1412,8 +1426,6 @@ const fillAlfaAtClose = async () => {
       await db.ref(metaPath("program_config")).set(clean);
       await db.ref(metaPath("general_settings")).set(cleanGeneral);
       await db.ref(metaPath("izin_options")).set(cleanIzin);
-      const cleanPwd = String(generalDraft.adminPassword || "").trim();
-      if (cleanPwd && cleanPwd.length >= 4) await db.ref(metaPath("admin_password")).set(cleanPwd);
       const snapshot = JSON.parse(JSON.stringify(clean));
       setProgramConfig(snapshot); setGeneralSettings(cleanGeneral); setIzinOptions(cleanIzin);
       saveConfigLocal(roomCode, snapshot); saveGeneralLocal(roomCode, cleanGeneral); saveIzinOptionsLocal(roomCode, cleanIzin);
@@ -1445,6 +1457,13 @@ const fillAlfaAtClose = async () => {
   }, [batchKey, validSub]);
 
   useEffect(() => { studentsRef.current = students; }, [students]);
+  useEffect(() => { currentBatchKeyRef.current = batchKey; }, [batchKey]);
+useEffect(() => { validSubRef.current = validSub; }, [validSub]);
+useEffect(() => { programConfigRef.current = programConfig; }, [programConfig]);
+useEffect(() => { allBatchEntriesRef.current = allBatchEntries; }, [allBatchEntries]);
+  useEffect(() => {
+  setAllStudentsCache(null);
+}, [students, batchKey]);
 
 useEffect(() => {
     if (!validSub) { setAttendance({}); setIzinReasons({}); setLoadingFb(false); return; }
@@ -1585,7 +1604,7 @@ const belumAbsenFiltered = useMemo(() => {
 
   const setStatus = (name, st) => {
     if (!isAdmin) {
-      const todayStr = toInputDate(new Date());
+      const todayStr = wibTodayStr();
       if (toInputDate(date) !== todayStr) return toast("⚠️ Siswa hanya bisa absen hari ini");
       if (!isDateActiveForCurrentSub()) return toast("📴 Hari ini sub ini tidak aktif (libur)");
       if (!isStudentAbsenOpen()) return toast("⚠️ Absen ditutup. Buka " + schedText);
@@ -1616,13 +1635,15 @@ const belumAbsenFiltered = useMemo(() => {
   };
 
   const markAllHadir = () => {
-    if (!isAdmin) return toast("⚠️ Hanya admin");
-    if (!validSub || !list.length) return;
-    pushHistory(); markDirtyMany(list);
-    setAttendance(prev => { const n = { ...prev }; list.forEach(s => n[s] = "HADIR"); return n; });
-    setIzinReasons(prev => { const n = { ...prev }; list.forEach(s => n[s] = ""); return n; });
-    toast("✅ Semua ditandai Hadir");
-  };
+  if (!isAdmin) return toast("⚠️ Hanya admin");
+  if (!validSub || !list.length) return;
+  const toChange = list.filter(s => attendance[s] !== "HADIR");
+  if (!toChange.length) return toast("✅ Semua sudah HADIR");
+  pushHistory(); markDirtyMany(toChange);
+  setAttendance(prev => { const n = { ...prev }; toChange.forEach(s => n[s] = "HADIR"); return n; });
+  setIzinReasons(prev => { const n = { ...prev }; toChange.forEach(s => n[s] = ""); return n; });
+  toast("✅ " + toChange.length + " siswa ditandai Hadir");
+};
 
   const openAlfaConfirm = () => {
     if (!isAdmin) return;
@@ -1713,7 +1734,7 @@ const belumAbsenFiltered = useMemo(() => {
 };
 const openBulkIzin = () => {
   if (!isAdmin) {
-    const todayStr = toInputDate(new Date());
+    const todayStr = wibTodayStr();
     if (toInputDate(date) !== todayStr) return toast("⚠️ Siswa hanya bisa absen hari ini");
     if (!isDateActiveForCurrentSub()) return toast("📴 Hari ini sub ini tidak aktif (libur)");
     if (!isStudentAbsenOpen()) return toast("⚠️ Absen ditutup. Buka " + schedText);
@@ -1961,7 +1982,23 @@ const applyBulkIzin = () => {
     setEditStudent(name);
     setEditRows([{ date: dateStr, status: attendance[name] || "", reason: izinReasons[name] || "" }]);
   };
-  const addEditRow = () => { setEditRows(prev => [...prev, { date: dateStr, status: "", reason: "" }]); };
+  const addEditRow = () => {
+    setEditRows(prev => {
+      const existing = prev.map(r => r.date).filter(Boolean).sort();
+      let nextDate = dateStr;
+      if (existing.length) {
+        const earliest = existing[0];
+        const [y, m, d] = earliest.split("-").map(Number);
+        const dt = new Date(y, m - 1, d);
+        // Mundur 1 hari, kalau masih bentrok, mundur terus
+        do {
+          dt.setDate(dt.getDate() - 1);
+          nextDate = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+        } while (existing.includes(nextDate) && (dt.getTime() > Date.now() - 1000*60*60*24*365));
+      }
+      return [...prev, { date: nextDate, status: "", reason: "" }];
+    });
+  };
   const updateEditRow = (idx, patch) => { setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r)); };
   const removeEditRow = (idx) => { setEditRows(prev => prev.filter((_, i) => i !== idx)); };
   const saveEditStudent = async () => {
@@ -2124,7 +2161,9 @@ const applyBulkIzin = () => {
           const item = val[toFbKey(n)] !== undefined ? val[toFbKey(n)] : val[n];
           if (item && typeof item === "object") st = normalizeStatus(item.status);
           else if (typeof item === "string") st = normalizeStatus(item);
-          if (k === batchKey && ds === dateStr && attendance[n]) st = normalizeStatus(attendance[n]);
+          if (k === batchKey && ds === dateStr && attendance[n] !== undefined) {
+  st = normalizeStatus(attendance[n]);
+}
           matrix[n][ds] = st;
         });
       }).catch(() => { names.forEach(n => { matrix[n][ds] = matrix[n][ds] || null; }); })
@@ -2136,27 +2175,6 @@ const applyBulkIzin = () => {
       totals[n] = t;
     });
     return { names, matrix, totals };
-  };
-  const xmlEscape = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-  const buildSheetXml = (sheetLabel, dateList, names, matrix, totals) => {
-    let rows = `<Row><Cell><Data ss:Type="String">No</Data></Cell><Cell><Data ss:Type="String">Nama</Data></Cell>`;
-    dateList.forEach(ds => { rows += `<Cell><Data ss:Type="String">${xmlEscape(ds.slice(8))}</Data></Cell>`; });
-    rows += `<Cell><Data ss:Type="String">H</Data></Cell><Cell><Data ss:Type="String">I</Data></Cell><Cell><Data ss:Type="String">S</Data></Cell><Cell><Data ss:Type="String">A</Data></Cell></Row>`;
-    names.forEach((n, idx) => {
-      const t = totals[n] || { HADIR:0, IZIN:0, SAKIT:0, ALFA:0 };
-      rows += `<Row><Cell><Data ss:Type="Number">${idx+1}</Data></Cell><Cell><Data ss:Type="String">${xmlEscape(n)}</Data></Cell>`;
-      dateList.forEach(ds => { const st = (matrix[n] && matrix[n][ds]) || null; rows += `<Cell><Data ss:Type="String">${xmlEscape(statusShort(st))}</Data></Cell>`; });
-      rows += `<Cell><Data ss:Type="Number">${t.HADIR}</Data></Cell><Cell><Data ss:Type="Number">${t.IZIN}</Data></Cell><Cell><Data ss:Type="Number">${t.SAKIT}</Data></Cell><Cell><Data ss:Type="Number">${t.ALFA}</Data></Cell></Row>`;
-    });
-    return `<Worksheet ss:Name="${xmlEscape(sheetLabel)}"><Table><Column ss:Width="30"/><Column ss:Width="160"/>${dateList.map(() => '<Column ss:Width="28"/>').join("")}<Column ss:Width="28"/><Column ss:Width="28"/><Column ss:Width="28"/><Column ss:Width="28"/>${rows}</Table></Worksheet>`;
-  };
-  const downloadSpreadsheetXml = (xmlBody, filename) => {
-    const full = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/></Style></Styles>${xmlBody}</Workbook>`;
-    const blob = new Blob([full], { type: "application/vnd.ms-excel" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
   const getDashboardDateList = () => {
     const year = dashYear, month = dashMonth;
@@ -2172,13 +2190,6 @@ const applyBulkIzin = () => {
       dateList = [...new Set(dateList)].sort();
     }
     return dateList;
-  };
-  const exportDashboardXLS = () => {
-    if (!dashboardData || !dashboardData.matrix) return toast("⚠️ Tampilkan rekap dulu");
-    const { start, end, dates, matrix, totals, batchLabel: bl, names, batchKey: bKey } = dashboardData;
-    const sheet = buildSheetXml(sheetNameFor(bKey || dashBatchKey), dates, names || [], matrix, totals);
-    downloadSpreadsheetXml(sheet, `Rekap_${String(bl).replace(/\s/g,"_")}_${start}_sd_${end}.xls`);
-    toast("📥 XLS diunduh");
   };
   const MONTH_NAMES_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
 
@@ -2220,7 +2231,7 @@ const handleSalinRekapRangeChange = (range) => {
   if (range === "custom") {
     let dl = [];
     try { dl = getDashboardDateList(); } catch {}
-    if (!dl.length) dl = [dateOffsetStr(new Date(), -6), toInputDate(new Date())];
+    if (!dl.length) dl = [dateOffsetStr(wibToday(), -6), wibTodayStr()];
     setSalinRekapStart(dl[0]);
     setSalinRekapEnd(dl[dl.length - 1]);
   }
@@ -2230,7 +2241,7 @@ const doSalinRekap = async () => {
   setSalinRekapBusy(true);
   try {
     let dateList = [];
-    const today = new Date();
+    const today = wibToday();
 
     if (salinRekapRange === "1w") {
       for (let i = 6; i >= 0; i--) dateList.push(dateOffsetStr(today, -i));
@@ -2286,26 +2297,122 @@ if (selectedKeys.length === 1) {
   }
   setSalinRekapBusy(false);
 };
-  const exportAllProgramsXLS = async () => {
+  /* ===== Ekspor Gabungan Rapi (1 sheet + warna + border) ===== */
+  const exportAllProgramsXlsxRapi = async () => {
     if (!isAdmin) return toast("⚠️ Hanya admin");
     if (!allBatchKeys.length) return toast("⚠️ Belum ada batch");
+    if (typeof ExcelJS === "undefined") return toast("⚠️ ExcelJS belum termuat, coba refresh");
     const dateList = getDashboardDateList();
     if (!dateList.length) return toast("⚠️ Pilih periode");
-    setDashboardLoading(true); toast("⏳ Menyusun rekap…");
+    setDashboardLoading(true); toast("⏳ Menyusun rekap gabungan rapi…");
     try {
-      let sheetsXml = "";
+      const allRows = [];
       for (const k of allBatchKeys) {
         const { names, matrix, totals } = await buildMatrixForBatch(k, dateList);
         if (!names.length) continue;
-        sheetsXml += buildSheetXml(sheetNameFor(k), dateList, names, matrix, totals);
+        const p = programOfBatch(k), s = subOfBatch(k);
+const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(programConfig, p, s);
+        names.forEach(n => {
+          const t = totals[n] || { HADIR:0, IZIN:0, SAKIT:0, ALFA:0 };
+          const days = dateList.map(ds => {
+            const st = (matrix[n] && matrix[n][ds]) || null;
+            return statusShort(st);
+          });
+          allRows.push({ program: sheetLabel, nama: n, days, h: t.HADIR||0, i: t.IZIN||0, s: t.SAKIT||0, a: t.ALFA||0 });
+        });
       }
-      if (!sheetsXml) { setDashboardLoading(false); return toast("⚠️ Tidak ada data"); }
+      if (!allRows.length) { setDashboardLoading(false); return toast("⚠️ Tidak ada data"); }
+
+      const dayCount = dateList.length;
       const start = dateList[0], end = dateList[dateList.length-1];
-      downloadSpreadsheetXml(sheetsXml, `Rekap_SEMUA_${start}_sd_${end}.xls`);
-      toast(`✅ XLS diunduh`);
-    } catch { toast("⚠️ Gagal ekspor"); }
+      const monthLabel = new Intl.DateTimeFormat("id-ID", { month: "long" }).format(new Date(start + "T00:00:00"));
+      const year = start.slice(0, 4);
+
+      const workbook = new ExcelJS.Workbook();
+      const ws = workbook.addWorksheet("Rekap Absensi Gabungan");
+      const headerFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
+      const headerFont = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
+      const normalFont = { name: "Arial", size: 9 };
+      const titleFont = { name: "Arial", bold: true, size: 14, color: { argb: "FF1F4E79" } };
+      const subtitleFont = { name: "Arial", bold: true, size: 11 };
+      const thinBorder = { top:{style:"thin"}, left:{style:"thin"}, bottom:{style:"thin"}, right:{style:"thin"} };
+      const fillH = { type: "pattern", pattern: "solid", fgColor: { argb: "FFC6EFCE" } };
+      const fillI = { type: "pattern", pattern: "solid", fgColor: { argb: "FFBDD7EE" } };
+      const fillS = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2D5F1" } };
+      const fillA = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFC7CE" } };
+      const totalCols = 3 + dayCount + 4;
+
+      ws.mergeCells(1, 1, 1, totalCols);
+      const titleCell = ws.getCell(1, 1);
+      titleCell.value = `REKAP ABSENSI SEMUA PROGRAM - ${String(monthLabel).toUpperCase()} ${year}`;
+      titleCell.font = titleFont;
+      titleCell.alignment = { horizontal: "center", vertical: "middle" };
+
+      ws.mergeCells(2, 1, 2, totalCols);
+      const subCell = ws.getCell(2, 1);
+      subCell.value = `Periode: ${start} s.d. ${end} | Digabung dari semua batch/program`;
+      subCell.font = subtitleFont;
+      subCell.alignment = { horizontal: "center", vertical: "middle" };
+
+      const headers = ["No", "Program", "Nama"];
+      dateList.forEach(ds => headers.push(ds.slice(8)));
+      headers.push("H", "I", "S", "A");
+      const headerRow = ws.getRow(4);
+      headers.forEach((h, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = h; cell.font = headerFont; cell.fill = headerFill;
+        cell.alignment = { horizontal: "center", vertical: "middle" }; cell.border = thinBorder;
+      });
+      headerRow.height = 22;
+
+      allRows.forEach((r, idx) => {
+        const row = ws.getRow(idx + 5);
+        const c1 = row.getCell(1); c1.value = idx+1; c1.font = normalFont; c1.alignment = {horizontal:"center",vertical:"middle"}; c1.border = thinBorder;
+        const c2 = row.getCell(2); c2.value = r.program; c2.font = normalFont; c2.alignment = {horizontal:"center",vertical:"middle"}; c2.border = thinBorder;
+        const c3 = row.getCell(3); c3.value = r.nama; c3.font = normalFont; c3.alignment = {horizontal:"left",vertical:"middle"}; c3.border = thinBorder;
+        r.days.forEach((val, dIdx) => {
+          const cell = row.getCell(4 + dIdx);
+          cell.value = val; cell.font = normalFont; cell.alignment = {horizontal:"center",vertical:"middle"}; cell.border = thinBorder;
+          if (val === "H") cell.fill = fillH;
+          else if (val === "I") cell.fill = fillI;
+          else if (val === "S") cell.fill = fillS;
+          else if (val === "A") cell.fill = fillA;
+        });
+        [r.h, r.i, r.s, r.a].forEach((val, tIdx) => {
+          const cell = row.getCell(4 + dayCount + tIdx);
+          cell.value = val; cell.font = normalFont; cell.alignment = {horizontal:"center",vertical:"middle"}; cell.border = thinBorder;
+          if (val > 0) cell.fill = [fillH, fillI, fillS, fillA][tIdx];
+        });
+      });
+
+      ws.getColumn(1).width = 5; ws.getColumn(2).width = 22; ws.getColumn(3).width = 28;
+      for (let i = 4; i < 4 + dayCount; i++) ws.getColumn(i).width = 3.5;
+      for (let i = 4 + dayCount; i < 4 + dayCount + 4; i++) ws.getColumn(i).width = 4.5;
+
+      const legendStart = 4 + allRows.length + 2;
+      ws.getCell(legendStart, 1).value = "Keterangan:";
+      ws.getCell(legendStart, 1).font = { name: "Arial", bold: true, size: 10 };
+      [["H","= Hadir (Hijau)",fillH],["I","= Izin (Biru)",fillI],["S","= Sakit (Ungu)",fillS],["A","= Alpha (Merah)",fillA],["-","= Tidak ada data / Libur",null]].forEach((leg, i) => {
+        const cell = ws.getCell(legendStart + 1 + i, 1);
+        cell.value = leg[0]; if (leg[2]) cell.fill = leg[2];
+        cell.border = thinBorder; cell.alignment = { horizontal: "center" };
+        cell.font = { name: "Arial", bold: true, size: 9 };
+        ws.getCell(legendStart + 1 + i, 2).value = leg[1];
+        ws.getCell(legendStart + 1 + i, 2).font = normalFont;
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `Rekap_Absensi_${monthLabel}_${year}_Gabungan.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast("✅ Excel gabungan rapi diunduh");
+    } catch (err) { console.error(err); toast("⚠️ Gagal ekspor gabungan"); }
     setDashboardLoading(false);
   };
+
 
   const quickAddSub = async () => {
     if (!isAdmin) return;
@@ -2361,7 +2468,7 @@ if (selectedKeys.length === 1) {
         const existing = JSON.parse(localStorage.getItem("absensi_rooms_history") || "[]");
         const next = existing.map(r => r.code === roomCode ? { ...r, name } : r);
         if (!next.find(r => r.code === roomCode)) next.unshift({ code: roomCode, name, lastAt: Date.now() });
-        localStorage.setItem("absensi_rooms_history", JSON.stringify(next.slice(0, 8)));
+        localStorage.setItem("absensi_rooms_history", JSON.stringify(next.slice(0, MAX_ROOM_HISTORY)));
       } catch {}
       toast("✅ Nama kelas disimpan");
     } catch { toast("⚠️ Gagal simpan nama"); }
@@ -2499,7 +2606,7 @@ if (selectedKeys.length === 1) {
     try {
       const existing = JSON.parse(localStorage.getItem("absensi_rooms_history") || "[]");
       const filtered = existing.filter(r => r.code !== code);
-      localStorage.setItem("absensi_rooms_history", JSON.stringify([{ code, name: name || code, lastAt: Date.now() }, ...filtered].slice(0, 8)));
+      localStorage.setItem("absensi_rooms_history", JSON.stringify([{ code, name: name || code, lastAt: Date.now() }, ...filtered].slice(0, MAX_ROOM_HISTORY)));
     } catch {}
     toast("✅ Masuk admin: " + (name || code));
   };
@@ -2802,10 +2909,6 @@ if (selectedKeys.length === 1) {
         onClick: () => { setAdminPassword(""); setAdminAuthError(""); setShowAdminAuth(true); setTimeout(() => adminPwdRef.current?.focus(), 80); },
         style: { height: 28, padding: "0 12px", borderRadius: 999, border: "1px solid rgba(0,0,0,.15)", background: "#fff", fontWeight: 800, fontSize: 11, cursor: "pointer", color: "#0f172a" }
       }, "🔒 Masuk Admin"),
-      isAdmin && typeof Notification !== "undefined" && Notification.permission !== "granted" && h("button", {
-        onClick: async () => { try { await Notification.requestPermission(); toast("🔔 Izin notifikasi diperbarui"); } catch {} },
-        style: { height: 28, padding: "0 12px", borderRadius: 999, border: "1px solid rgba(0,0,0,.12)", background: "#fff", fontWeight: 800, fontSize: 11, cursor: "pointer", color: "#0f172a" }
-      }, "🔔 Notif"),
       isAdmin && h("button", {
         onClick: openScheduleSettings,
         style: { height: 28, padding: "0 12px", borderRadius: 999, border: "1px solid rgba(0,0,0,.12)", background: "#fff", fontWeight: 800, fontSize: 11, cursor: "pointer", color: "#0f172a" }
@@ -2943,11 +3046,11 @@ if (selectedKeys.length === 1) {
             style: { marginTop: 16, padding: "12px 16px", borderRadius: 14, background: isRed ? "#fef2f2" : "#eff6ff", border: isRed ? "1px solid #fecaca" : "1px solid #bfdbfe", color: isRed ? "#991b1b" : "#1e40af", fontSize: 13, fontWeight: 600 }
           }, msg);
         })(),
-        isAdmin && toInputDate(date) !== toInputDate(new Date()) && h("div", {
+        isAdmin && toInputDate(date) !== wibTodayStr() && h("div", {
           style: { marginTop: 16, padding: "12px 16px", borderRadius: 14, background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }
         }, [
           h("span", { style: { flex: 1 } }, "📅 Admin mengedit tanggal selain hari ini."),
-          h("button", { onClick: () => { setDate(new Date()); toast("✅ Kembali ke hari ini"); }, style: { height: 34, padding: "0 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,.12)", background: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer" } }, "Hari ini")
+          h("button", { onClick: () => { setDate(wibToday()); toast("✅ Kembali ke hari ini"); }, style: { height: 34, padding: "0 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,.12)", background: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer" } }, "Hari ini")
         ]),
         isAdmin && (() => {
           const active = isDateActiveForCurrentSub();
@@ -2959,30 +3062,55 @@ if (selectedKeys.length === 1) {
         })(),
 
         h("div", { style: { marginTop:24, display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 } },
-          ["HADIR","SAKIT","IZIN","ALFA"].map(k => {
-            const st = STATUS[k];
-            return h("div", { key: k, style: { borderRadius:16, background:"#fff", border:"1px solid rgba(0,0,0,.05)", boxShadow:"0 6px 24px rgba(0,0,0,.04)", padding:"14px 16px" } }, [
-              h("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center" } }, [
-                h("span", { style:{ fontSize:10, fontWeight:800, letterSpacing:"0.14em", color:"rgba(0,0,0,.4)" } }, k),
-                h("span", { style:{ fontSize:13 } }, st.icon)
-              ]),
-              h("div", { style:{ marginTop:8, display:"flex", alignItems:"baseline", gap:4 } }, [
-                h("span", { style:{ fontSize:26, fontWeight:800, letterSpacing:"-0.025em" } }, counts[k]),
-                h("span", { style:{ fontSize:11, fontWeight:700, color:"rgba(0,0,0,.3)" } }, "orang")
-              ]),
-              h("div", { style: { marginTop:10, height:6, borderRadius:999, background:"rgba(0,0,0,.06)", overflow:"hidden" } },
-                h("div", { style: { height:"100%", borderRadius:999, background: st.border, width: `${list.length ? (counts[k]/list.length*100) : 0}%`, transition:"width .5s" } })
-              )
-            ]);
-          })
-        ),
+         ["HADIR","SAKIT","IZIN","ALFA"].map(k => {
+  const st = STATUS[k];
+  return h("div", { 
+    key: k, 
+    onClick: () => { setStatusListSearch(""); setStatusListModal(k); },
+    style: { 
+      borderRadius:16, background:"#fff", border:"1px solid rgba(0,0,0,.05)", 
+      boxShadow:"0 6px 24px rgba(0,0,0,.04)", padding:"14px 16px", 
+      cursor: "pointer", transition: "all .2s" 
+    },
+    onMouseEnter: e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 8px 30px rgba(0,0,0,.08)"; },
+    onMouseLeave: e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 6px 24px rgba(0,0,0,.04)"; }
+  }, [
+    h("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center" } }, [
+      h("span", { style:{ fontSize:10, fontWeight:800, letterSpacing:"0.14em", color:"rgba(0,0,0,.4)" } }, k),
+      h("span", { style:{ fontSize:13 } }, st.icon)
+    ]),
+    h("div", { style:{ marginTop:8, display:"flex", alignItems:"baseline", gap:4 } }, [
+      h("span", { style:{ fontSize:26, fontWeight:800, letterSpacing:"-0.025em" } }, counts[k]),
+      h("span", { style:{ fontSize:11, fontWeight:700, color:"rgba(0,0,0,.3)" } }, "orang")
+    ]),
+    h("div", { style: { marginTop:10, height:6, borderRadius:999, background:"rgba(0,0,0,.06)", overflow:"hidden" } },
+      h("div", { style: { height:"100%", borderRadius:999, background: st.border, width: `${list.length ? (counts[k]/list.length*100) : 0}%`, transition:"width .5s" } })
+    )
+      ]);
+  })
+),
 
-        h("div", { style:{ marginTop:20, display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" } }, [
+          h("div", { style:{ marginTop:20, display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" } }, [
         h("button", { onClick: openBulkIzin, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(59,130,246,.35)", fontWeight:700, fontSize:13, color:"#1e40af", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer", display:"flex", alignItems:"center", gap:6 } }, "ℹ️ Izin Masal"),
         h("button", {
-  onClick: () => { setBelumAbsenSearch(""); setShowBelumAbsen(true); },
-  style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(251,146,60,.4)", fontWeight:700, fontSize:13, color:"#ea580c", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer", display:"flex", alignItems:"center", gap:6 }
-}, ["👀 Belum Absen", belum > 0 ? " (" + belum + ")" : ""]),
+  onClick: () => { if (loadingFb) return; setBelumAbsenSearch(""); setShowBelumAbsen(true); },
+  disabled: loadingFb,
+  title: loadingFb ? "Sedang memuat data..." : (belum > 0 ? "Lihat siapa yang belum absen" : "Semua sudah diabsen"),
+  style: {
+    height:44, padding:"0 18px", borderRadius:12,
+    background: loadingFb ? "#f4f4f5" : "#fff",
+    border: loadingFb ? "1px solid #e4e4e7" : "1px solid rgba(251,146,60,.4)",
+    fontWeight:700, fontSize:13,
+    color: loadingFb ? "#a1a1aa" : "#ea580c",
+    boxShadow:"0 1px 2px rgba(0,0,0,.05)",
+    cursor: loadingFb ? "not-allowed" : "pointer",
+    display:"flex", alignItems:"center", gap:6,
+    opacity: loadingFb ? 0.6 : 1
+  }
+}, [
+  loadingFb ? "⏳ Memuat..." : "👀 Belum Absen",
+  (!loadingFb && belum > 0) ? " (" + belum + ")" : ""
+]),
           isAdmin && h("button", { onClick: openAlfaConfirm, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(239,68,68,.25)", fontWeight:700, fontSize:13, color:"#b91c1c", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer" } }, "⚠ Alfakan"),
           isAdmin && h("button", { onClick: doUndo, disabled: !undoStack.length, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color:"rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor: undoStack.length ? "pointer" : "not-allowed", opacity: undoStack.length ? 1 : 0.4 } }, "↶ Undo"),
           isAdmin && h("button", { onClick: doRedo, disabled: !redoStack.length, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color:"rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor: redoStack.length ? "pointer" : "not-allowed", opacity: redoStack.length ? 1 : 0.4 } }, "↷ Redo"),
@@ -2993,10 +3121,18 @@ if (selectedKeys.length === 1) {
           isAdmin && h("button", { onClick: () => { setShowManage(v => !v); setShowAddForm(false); }, style: { height:44, padding:"0 18px", borderRadius:12, background: showManage ? theme.accent : "#fff", border: showManage ? "none" : "1px solid rgba(0,0,0,.1)", fontWeight:700, fontSize:13, color: showManage ? "#fff" : "rgba(0,0,0,.7)", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer" } }, showManage ? "✓ Kelola Anggota" : "👥 Kelola Anggota"),
           h("div", { style: { marginLeft:"auto", fontSize:12, fontWeight:600, color:"rgba(0,0,0,.4)", display:"flex", alignItems:"center", gap:8 } }, [
             h("span", {
-  onClick: () => { if (belum > 0) { setBelumAbsenSearch(""); setShowBelumAbsen(true); } },
-  title: belum > 0 ? "Klik untuk lihat siapa saja" : "Semua sudah diabsen",
-  style: { padding:"4px 10px", borderRadius:999, fontSize:11, fontWeight:700, border: `1px solid ${belum ? "#fde68a" : "#a7f3d0"}`, background: belum ? "#fffbeb" : "#ecfdf5", color: belum ? "#b45309" : "#047857", cursor: belum > 0 ? "pointer" : "default" }
-}, loadingFb ? "Memuat..." : (belum ? `${belum} belum absen` : "Semua sudah diabsen")),
+  onClick: () => { if (loadingFb) return; if (belum > 0) { setBelumAbsenSearch(""); setShowBelumAbsen(true); } },
+  title: loadingFb ? "Sedang memuat data..." : (belum > 0 ? "Klik untuk lihat siapa saja" : "Semua sudah diabsen"),
+  style: {
+    padding:"4px 10px", borderRadius:999, fontSize:11, fontWeight:700,
+    border: `1px solid ${belum ? "#fde68a" : "#a7f3d0"}`,
+    background: belum ? "#fffbeb" : "#ecfdf5",
+    color: belum ? "#b45309" : "#047857",
+    cursor: (belum > 0 && !loadingFb) ? "pointer" : "default",
+    opacity: loadingFb ? 0.5 : 1,
+    pointerEvents: loadingFb ? "none" : "auto"
+  }
+}, loadingFb ? "⏳ Memuat..." : (belum ? `${belum} belum absen` : "Semua sudah diabsen")),
             h("span", { style:{ fontSize:11, letterSpacing:"0.1em" } }, `${list.length} SISWA`)
           ])
         ]),
@@ -3425,7 +3561,7 @@ if (selectedKeys.length === 1) {
   },
   style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #cbd5e1", background:"#fff", color:"#0f172a", fontWeight:700, fontSize:13, cursor:"pointer" }
 }, "📋 Salin Rekap"),
-  h("button", { onClick: exportAllProgramsXLS, style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #cbd5e1", background:"#fff", color:"#0f172a", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Semua")
+  h("button", { onClick: exportAllProgramsXlsxRapi, style: { height:40, padding:"0 16px", borderRadius:10, border:"1px solid #16a34a", background:"#f0fdf4", color:"#15803d", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Gabungan Rapi")
 ])
           ])
         ]),
@@ -3470,10 +3606,7 @@ if (selectedKeys.length === 1) {
               )
             ])
           ),
-          h("div", { style:{ display:"flex", flexWrap:"wrap", gap:10, marginTop:14 } }, [
-            h("button", { onClick: exportDashboardXLS, style: { height:42, padding:"0 16px", borderRadius:10, border:"none", background:"#0f172a", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Batch Ini"),
-            h("button", { onClick: exportAllProgramsXLS, style: { height:42, padding:"0 16px", borderRadius:10, border:"none", background: theme.accent, color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" } }, "📥 Ekspor Semua")
-          ])
+          null
         ])
       ])
     ]),
@@ -3583,6 +3716,51 @@ if (selectedKeys.length === 1) {
     ])
   ])
 ]),
+statusListModal && h("div", { style: { position:"fixed", inset:0, zIndex:195, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
+  h("div", { onClick: () => setStatusListModal(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
+  h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
+    h("button", { onClick: () => setStatusListModal(null), style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
+    h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:4, paddingRight:30, display: "flex", alignItems: "center", gap: 8 } }, [
+      h("span", { style: { fontSize: 20 } }, STATUS[statusListModal].icon),
+      h("span", null, "Daftar " + statusListModal)
+    ]),
+    h("div", { style:{ fontSize:12, color:"#64748b", marginBottom:14, fontWeight:600, lineHeight: 1.5 } }, [batchLabel, " · ", formatDateAbsensi(date)]),
+    (() => {
+      const filteredList = list.filter(n => normalizeStatus(attendance[n]) === statusListModal);
+      const searchedList = filteredList.filter(n => n.toLowerCase().includes(statusListSearch.toLowerCase()));
+      if (filteredList.length === 0) {
+        return h("div", { style:{ padding:36, textAlign:"center", background:"#f8fafc", border:"1px dashed #cbd5e1", borderRadius:14 } }, [
+          h("div", { style:{ fontSize: 44, marginBottom: 6 } }, "📭"),
+          h("div", { style:{ fontSize:14, fontWeight:800, color:"#64748b" } }, `Belum ada yang ${statusListModal}`),
+          h("div", { style:{ fontSize:12, color:"#94a3b8", marginTop:4, fontWeight:600 } }, "0 dari " + list.length + " siswa"),
+        ]);
+      }
+      return h("div", null, [
+        h("input", {
+          type: "text", value: statusListSearch,
+          onChange: e => setStatusListSearch(e.target.value),
+          placeholder: "Cari nama...",
+          style: { width: "100%", height: 38, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none", marginBottom: 10 }
+        }),
+        h("div", { style:{ flex:1, minHeight: 120, overflowY:"auto", maxHeight:"48vh", border:"1px solid #e2e8f0", borderRadius:12 } },
+          searchedList.length === 0 
+            ? h("div", { style:{ padding:20, textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:600 } }, ["Tidak ada: ", h("strong", null, `"${statusListSearch}"`)])
+            : searchedList.map((name, i) => (
+                h("div", { key: name, style:{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderBottom: i < searchedList.length-1 ? "1px solid #f1f5f9" : "none" } }, [
+                  h("span", { style:{ width:26, height:26, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background: STATUS[statusListModal].bg, color: STATUS[statusListModal].text, border: `1px solid ${STATUS[statusListModal].border}` } }, i + 1),
+                  h("span", { style:{ flex:1, fontWeight:700, fontSize:13, color:"#1e293b", minWidth: 0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, name),
+                  statusListModal === "IZIN" && izinReasons[name] && h("span", { style: { fontSize: 11, fontWeight: 700, color: "#1e3a8a", background: "rgba(59,130,246,.1)", padding: "3px 8px", borderRadius: 999, flexShrink: 0 } }, izinReasons[name])
+                ])
+              ))
+        ),
+        h("div", { style:{ fontSize:12, fontWeight:800, color: STATUS[statusListModal].border, marginTop:12, textAlign:"center", padding:"8px", background: STATUS[statusListModal].bg, borderRadius:10, border: `1px solid ${STATUS[statusListModal].border}` } },
+          searchedList.length !== filteredList.length
+            ? `${searchedList.length} dari ${filteredList.length} siswa (difilter)`
+            : `${filteredList.length} siswa berstatus ${statusListModal}`)
+      ]);
+    })()
+  ])
+]),
 showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
   h("div", { onClick: () => setShowBelumAbsen(false), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
   h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
@@ -3600,13 +3778,15 @@ showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, dis
       : h("div", null, [
           isAdmin && belumAbsenList.length > 0 && h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 } }, [
             h("button", {
-              onClick: () => { setShowBelumAbsen(false); setTimeout(() => markAllHadir(), 100); },
-              style: { height:40, borderRadius:10, border:"none", background:"#22c55e", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }
-            }, `✅ Semua Hadir (${belumAbsenList.length})`),
-            h("button", {
-              onClick: () => { setShowBelumAbsen(false); setTimeout(() => openAlfaConfirm(), 100); },
-              style: { height:40, borderRadius:10, border:"none", background:"#ef4444", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }
-            }, `❌ Alfakan (${belumAbsenList.length})`)
+  onClick: () => { if (loadingFb) return; setShowBelumAbsen(false); setTimeout(() => markAllHadir(), 100); },
+  disabled: loadingFb,
+  style: { height:40, borderRadius:10, border:"none", background: loadingFb ? "#86efac" : "#22c55e", color:"#fff", fontWeight:800, fontSize:12, cursor: loadingFb ? "not-allowed" : "pointer", opacity: loadingFb ? 0.6 : 1 }
+}, `✅ Semua Hadir (${belumAbsenList.length})`),
+h("button", {
+  onClick: () => { if (loadingFb) return; setShowBelumAbsen(false); setTimeout(() => openAlfaConfirm(), 100); },
+  disabled: loadingFb,
+  style: { height:40, borderRadius:10, border:"none", background: loadingFb ? "#fca5a5" : "#ef4444", color:"#fff", fontWeight:800, fontSize:12, cursor: loadingFb ? "not-allowed" : "pointer", opacity: loadingFb ? 0.6 : 1 }
+}, `❌ Alfakan (${belumAbsenList.length})`)
           ]),
           
           !isAdmin && (() => {
@@ -3643,8 +3823,12 @@ showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, dis
                     h("span", { style:{ width:26, height:26, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background:"#fee2e2", color:"#dc2626" } }, realIdx + 1),
                     h("span", { style:{ flex:1, fontWeight:700, fontSize:13, color:"#1e293b", minWidth: 0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, name),
                     (() => {
+  // Kalau masih loading, kunci total — apapun role-nya
+  if (loadingFb) {
+    return h("span", { title: "Sedang memuat...", style:{ fontSize: 13, opacity: 0.4, flexShrink: 0 } }, "⏳");
+  }
   const canAct = isAdmin || (
-    toInputDate(date) === toInputDate(new Date()) &&
+    toInputDate(date) === wibTodayStr() &&
     isDateActiveForCurrentSub() &&
     isStudentAbsenOpen()
   );
@@ -3685,7 +3869,7 @@ showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, dis
       h("div", { style: { position:"relative", width:"100%", maxWidth:380, borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease" } }, [
         h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:6 } }, "🔒 Masuk Mode Admin"),
         h("div", { style:{ fontSize:13, color:"#64748b", marginBottom:14, lineHeight:1.4 } }, "Masukkan password admin kelas \"" + (roomName || roomCode) + "\""),
-        h("input", { ref: adminPwdRef, type: "text", autoComplete: "off", value: adminPassword, onChange: e => { setAdminPassword(e.target.value); setAdminAuthError(""); }, onKeyDown: e => {
+        h("input", { ref: adminPwdRef, type: "Password", autoComplete: "off", value: adminPassword, onChange: e => { setAdminPassword(e.target.value); setAdminAuthError(""); }, onKeyDown: e => {
           if (e.key === "Enter") {
             if ((adminPassword || "").trim() !== roomAdminPassword) { setAdminAuthError("Password salah"); toast("⚠️ Password salah"); return; }
             setAppMode("admin"); setShowAdminAuth(false); setAdminPassword(""); toast("✅ Mode Admin aktif");
@@ -3950,10 +4134,6 @@ showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, dis
           h("div", null, [
             h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "NOMOR WHATSAPP TUJUAN"),
             h("input", { type: "text", value: generalDraft.waNumber || "", onChange: e => setGeneralDraft(prev => ({ ...prev, waNumber: e.target.value })), placeholder: DEFAULT_WHATSAPP, style: { width: "100%", height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none" } })
-          ]),
-          h("div", null, [
-            h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "PASSWORD ADMIN KELAS INI"),
-            h("input", { type: "text", value: generalDraft.adminPassword || "", onChange: e => setGeneralDraft(prev => ({ ...prev, adminPassword: e.target.value })), placeholder: "Default: LP2SSC_ID", style: { width: "100%", height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none", letterSpacing: "0.05em" } })
           ])
         ]),
 
@@ -4172,6 +4352,15 @@ showBelumAbsen && h("div", { style: { position:"fixed", inset:0, zIndex:195, dis
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(h(AbsensiApp));
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => console.log('[PWA] Service Worker aktif:', reg.scope))
+        .catch(err => console.warn('[PWA] Service Worker gagal:', err));
+    });
+  }
 </script>
 </body>
 </html>
