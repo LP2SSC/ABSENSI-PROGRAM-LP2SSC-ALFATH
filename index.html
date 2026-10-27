@@ -69,7 +69,8 @@ const DEFAULT_GENERAL = {
   kegiatan: "KEGIATAN",
   kegiatanIcon: "⬜",
   footer: "TEMPLATE",
-  waNumber: DEFAULT_WHATSAPP
+  waNumber: DEFAULT_WHATSAPP,
+  eventLabel: "Amaliyah"
 };
 const HARI_OPTIONS = [
   { value: 1, label: "Senin" },
@@ -123,6 +124,20 @@ function roomInfoPath(code) { return `${FB_ROOT}/rooms/${String(code || "").trim
 
 /* ===================== CONFIG HELPERS ===================== */
 function makeDefaultProgramConfig() { return { programs: [ { id: "P1", label: "Program 1", subs: [] } ] }; }
+function normalizeAmaliyah(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  Object.keys(raw).forEach(k => {
+    const day = Number(k);
+    if (isNaN(day) || day < 0 || day > 6) return;
+    const item = raw[k];
+    if (!item || typeof item !== "object") return;
+    const text = String(item.text || item.label || "").trim();
+    const target = Math.max(0, parseInt(item.target, 10) || 0);
+    if (text) out[String(day)] = { text, target };
+  });
+  return out;
+}
 function normalizeSubs(rawSubs) {
   let arr = [];
   if (Array.isArray(rawSubs)) arr = rawSubs;
@@ -134,7 +149,9 @@ function normalizeSubs(rawSubs) {
       id: String(s.id || ""),
       label: String(s.label || ("Sub " + s.id)).trim() || ("Sub " + s.id),
       emoji: Array.from(String(s.emoji || "")).slice(0, 4).join(""),
-      days: normalizeProgramDays(s.days)
+      days: normalizeProgramDays(s.days),
+      trackGender: s.trackGender === true || s.trackGender === "true" || s.trackGender === 1,
+      amaliyah: normalizeAmaliyah(s.amaliyah)
     }))
     .filter(s => s.id);
 }
@@ -147,12 +164,22 @@ function normalizeProgramConfig(raw) {
   }
   if (rawPrograms) {
     return { programs: rawPrograms.filter(p => p && typeof p === "object")
-      .map(p => ({ id: String(p.id || ""), label: String(p.label || "").trim() || ("Program " + String(p.id || "1")), subs: normalizeSubs(p.subs) }))
+      .map(p => ({
+        id: String(p.id || ""),
+        label: String(p.label || "").trim() || ("Program " + String(p.id || "1")),
+        eventLabel: String(p.eventLabel != null ? p.eventLabel : "").trim(),
+        subs: normalizeSubs(p.subs)
+      }))
       .filter(p => p.id) };
   }
   const legacyKeys = Object.keys(raw).filter(k => raw[k] && typeof raw[k] === "object" && raw[k].subs !== undefined);
   if (legacyKeys.length) {
-    return { programs: legacyKeys.sort().map(k => ({ id: k, label: String(raw[k].label || "").trim() || ("Program " + k.slice(1)), subs: normalizeSubs(raw[k].subs) })) };
+    return { programs: legacyKeys.sort().map(k => ({
+      id: k,
+      label: String(raw[k].label || "").trim() || ("Program " + k.slice(1)),
+      eventLabel: String(raw[k].eventLabel != null ? raw[k].eventLabel : "").trim(),
+      subs: normalizeSubs(raw[k].subs)
+    })) };
   }
   return makeDefaultProgramConfig();
 }
@@ -410,6 +437,17 @@ function loadStudentsLocal(batchKey) {
 function saveStudentsLocal(batchKey, list) {
   try { localStorage.setItem("absensi_v2_students_" + batchKey, JSON.stringify(list)); } catch {}
 }
+function loadGendersLocal(batchKey) {
+  try {
+    const raw = localStorage.getItem("absensi_v2_genders_" + batchKey);
+    if (raw) { const obj = JSON.parse(raw); if (obj && typeof obj === "object") return obj; }
+  } catch {}
+  return {};
+}
+function saveGendersLocal(batchKey, map) {
+  try { localStorage.setItem("absensi_v2_genders_" + batchKey, JSON.stringify(map || {})); } catch {}
+}
+function gendersPath(batchKey) { return `${basePath()}/batch_${batchKey}/genders`; }
 function loadConfigLocal(roomCode) {
   try {
     const key = "absensi_v2_config_" + (roomCode || "_legacy");
@@ -432,7 +470,8 @@ function loadGeneralLocal(roomCode) {
         kegiatan: String(v.kegiatan || DEFAULT_GENERAL.kegiatan),
         kegiatanIcon: String(v.kegiatanIcon || DEFAULT_GENERAL.kegiatanIcon),
         footer: String(v.footer || DEFAULT_GENERAL.footer),
-        waNumber: String(v.waNumber || DEFAULT_GENERAL.waNumber)
+        waNumber: String(v.waNumber || DEFAULT_GENERAL.waNumber),
+        eventLabel: String(v.eventLabel != null ? v.eventLabel : DEFAULT_GENERAL.eventLabel)
       };
     }
   } catch {}
@@ -662,6 +701,7 @@ function AbsensiApp() {
   const sub = subOfBatch(batchKey);
 
   const [students, setStudents] = useState(() => loadStudentsLocal(batchKey));
+  const [genders, setGenders] = useState(() => loadGendersLocal(batchKey));
   const [date, setDate] = useState(() => wibToday());
   const [attendance, setAttendance] = useState({});
   const [izinReasons, setIzinReasons] = useState({});
@@ -813,6 +853,17 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
     return (s && Array.isArray(s.days) && s.days.length) ? s.days : [...ALL_DAYS];
   }, [programConfig, program, sub, validSub]);
 
+  const currentAmaliyah = useMemo(() => {
+    if (!validSub) return null;
+    const p = (programConfig.programs || []).find(x => x.id === program);
+    const s = p && (p.subs || []).find(x => String(x.id) === String(sub));
+    if (!s || !s.amaliyah) return null;
+    const day = date.getDay();
+    const a = s.amaliyah[String(day)];
+    if (!a || !a.text) return null;
+    return { text: a.text, target: Math.max(0, a.target | 0) };
+  }, [programConfig, program, sub, validSub, date]);
+
   const isDateActiveForCurrentSub = (d = date) => {
     const ds = toInputDate(d);
     const [yy, mm, dd] = ds.split("-").map(Number);
@@ -858,6 +909,41 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
   };
 
   useEffect(() => { if (appMode === "siswa") { setDate(wibToday()); setShowManage(false); } }, [appMode]);
+
+  // Auto-pilih sub yang sedang buka saat siswa join / saat schedule ready
+  useEffect(() => {
+    if (appMode !== "siswa" || !roomCode || !scheduleReady) return;
+    const wib = getWibParts();
+    const nowMin = wib.hour * 60 + wib.minute;
+    const todayDow = new Date().getDay();
+    // Cek apakah batch sekarang sudah buka
+    const curSched = resolveScheduleForBatch(batchKey, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
+    const pCur = (programConfig.programs || []).find(x => x.id === programOfBatch(batchKey));
+    const sCur = pCur && (pCur.subs || []).find(x => String(x.id) === String(subOfBatch(batchKey)));
+    const daysCur = (sCur && Array.isArray(sCur.days) && sCur.days.length) ? sCur.days : ALL_DAYS;
+    const curActive = daysCur.includes(todayDow);
+    const curOpen = curActive && (!curSched.enabled || isTimeWithin(nowMin, curSched.open, curSched.close));
+    if (curOpen) return;
+    // Cari batch lain yang buka
+    let found = null;
+    for (const ent of allBatchEntries) {
+      if (ent.key === batchKey) continue;
+      const pId = programOfBatch(ent.key), sId = subOfBatch(ent.key);
+      const pObj = (programConfig.programs || []).find(x => x.id === pId);
+      const sObj = pObj && (pObj.subs || []).find(x => String(x.id) === String(sId));
+      const subDays = (sObj && Array.isArray(sObj.days) && sObj.days.length) ? sObj.days : ALL_DAYS;
+      if (!subDays.includes(todayDow)) continue;
+      const sched = resolveScheduleForBatch(ent.key, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
+      if (!sched.enabled || isTimeWithin(nowMin, sched.open, sched.close)) {
+        found = ent.key;
+        break;
+      }
+    }
+    if (found) {
+      setBatchKey(found);
+      toast("📌 Otomatis pindah ke sub yang sedang buka");
+    }
+  }, [appMode, roomCode, scheduleReady, programConfig, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, allBatchEntries]);
 
   useEffect(() => {
     if (!programConfig.programs || !programConfig.programs.length) return;
@@ -905,7 +991,8 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
         const merged = {
           header: String(v.header || DEFAULT_GENERAL.header), kegiatan: String(v.kegiatan || DEFAULT_GENERAL.kegiatan),
           kegiatanIcon: String(v.kegiatanIcon || DEFAULT_GENERAL.kegiatanIcon), footer: String(v.footer || DEFAULT_GENERAL.footer),
-          waNumber: String(v.waNumber || DEFAULT_GENERAL.waNumber)
+          waNumber: String(v.waNumber || DEFAULT_GENERAL.waNumber),
+          eventLabel: String(v.eventLabel != null ? v.eventLabel : DEFAULT_GENERAL.eventLabel)
         };
         setGeneralSettings(merged); saveGeneralLocal(roomCode, merged);
       }
@@ -1213,6 +1300,7 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
       if (metaSrc[k] !== undefined && metaSrc[k] !== null) meta[k] = metaSrc[k];
     });
     const students = {};
+    const genders = {};
     Object.keys(room).forEach(k => {
       if (k.indexOf("batch_") !== 0) return;
       const bk = k.slice(6);
@@ -1222,8 +1310,10 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
         const list = Object.keys(arr).sort((a,b) => parseInt(a,10) - parseInt(b,10)).map(x => String(arr[x]).trim()).filter(Boolean);
         if (list.length) students[bk] = list;
       }
+      const g = room[k] && room[k].genders;
+      if (g && typeof g === "object" && Object.keys(g).length) genders[bk] = g;
     });
-    return { info: { name: String(info.name || code), createdAt: info.createdAt || null }, meta, students };
+    return { info: { name: String(info.name || code), createdAt: info.createdAt || null }, meta, students, genders };
   };
 
   const handleExportCurrent = async () => {
@@ -1265,6 +1355,7 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
             studentCount: total,
             meta: r.meta && typeof r.meta === "object" ? r.meta : {},
             students: stu,
+            genders: r.genders && typeof r.genders === "object" ? r.genders : {},
             include: true
           };
         }).filter(x => x.targetCode);
@@ -1317,6 +1408,10 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
           if (!Array.isArray(arr) || !arr.length) return;
           stuUpdates[`${FB_ROOT}/rooms/${code}/batch_${bk}/students`] = arr.map(n => String(n).trim()).filter(Boolean);
         });
+        Object.keys(it.genders || {}).forEach(bk => {
+          const g = it.genders[bk];
+          if (g && typeof g === "object") stuUpdates[`${FB_ROOT}/rooms/${code}/batch_${bk}/genders`] = g;
+        });
         if (Object.keys(stuUpdates).length) await db.ref().update(stuUpdates);
 
         try {
@@ -1352,14 +1447,51 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
   };
   const draftRemoveProgram = (pId) => { setConfigDraft(prev => ({ programs: (prev.programs || []).filter(p => p.id !== pId) })); };
   const draftUpdateProgramLabel = (pId, label) => { setConfigDraft(prev => ({ programs: (prev.programs || []).map(p => p.id === pId ? { ...p, label } : p) })); };
+  const draftUpdateProgramEventLabel = (pId, eventLabel) => {
+    setConfigDraft(prev => ({
+      programs: (prev.programs || []).map(p => p.id === pId ? { ...p, eventLabel: String(eventLabel || "") } : p)
+    }));
+  };
+  const draftToggleSubTrackGender = (pId, subId) => {
+    setConfigDraft(prev => ({
+      programs: (prev.programs || []).map(p => {
+        if (p.id !== pId) return p;
+        return {
+          ...p,
+          subs: (p.subs || []).map(s => String(s.id) === String(subId) ? { ...s, trackGender: !s.trackGender } : s)
+        };
+      })
+    }));
+  };
   const draftAddSub = (pId) => {
     setConfigDraft(prev => ({
       programs: (prev.programs || []).map(p => {
         if (p.id !== pId) return p;
         const subs = [...(p.subs || [])];
         const id = nextSubId(subs);
-        subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS] });
+        subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, amaliyah: {} });
         return { ...p, subs };
+      })
+    }));
+  };
+  const draftUpdateSubAmaliyah = (pId, subId, dayVal, field, value) => {
+    setConfigDraft(prev => ({
+      programs: (prev.programs || []).map(p => {
+        if (p.id !== pId) return p;
+        return {
+          ...p,
+          subs: (p.subs || []).map(s => {
+            if (String(s.id) !== String(subId)) return s;
+            const ama = { ...(s.amaliyah || {}) };
+            const key = String(dayVal);
+            const cur = { text: "", target: 0, ...(ama[key] || {}) };
+            if (field === "text") cur.text = String(value || "");
+            if (field === "target") cur.target = Math.max(0, parseInt(value, 10) || 0);
+            if (!cur.text && !cur.target) delete ama[key];
+            else ama[key] = { text: cur.text, target: cur.target };
+            return { ...s, amaliyah: ama };
+          })
+        };
       })
     }));
   };
@@ -1403,9 +1535,16 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
           id: String(s.id),
           label: String(s.label || "").trim() || ("Sub " + s.id),
           emoji: Array.from(String(s.emoji || "")).slice(0, 4).join(""),
-          days: normalizeProgramDays(s.days)
+          days: normalizeProgramDays(s.days),
+          trackGender: s.trackGender === true,
+          amaliyah: normalizeAmaliyah(s.amaliyah)
         })).filter(s => s.id);
-        clean.programs.push({ id: String(p.id), label: String(p.label || "").trim() || ("Program " + p.id), subs });
+        clean.programs.push({
+          id: String(p.id),
+          label: String(p.label || "").trim() || ("Program " + p.id),
+          eventLabel: String(p.eventLabel || "").trim(),
+          subs
+        });
       }
       if (!clean.programs.length) return toast("⚠️ Minimal 1 program");
       const cleanIzin = izinDraft.map(s => String(s).trim()).filter(Boolean);
@@ -1430,18 +1569,23 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
   };
 
   useEffect(() => {
-    if (!validSub) { setStudents([]); setLoadingFb(false); studentsLoadedFor.current = null; return; }
+    if (!validSub) { setStudents([]); setGenders({}); setLoadingFb(false); studentsLoadedFor.current = null; return; }
     studentsLoadedFor.current = null;
     setLoadingFb(true); skipNextSave.current = true; dirtyRef.current.clear();
     const local = loadStudentsLocal(batchKey);
     setStudents(local);
+    setGenders(loadGendersLocal(batchKey));
     const ref = db.ref(studentsPath(batchKey));
-    ref.once("value").then(snap => {
+    const gRef = db.ref(gendersPath(batchKey));
+    Promise.all([ref.once("value"), gRef.once("value")]).then(([snap, gSnap]) => {
       const val = snap.val();
       if (Array.isArray(val) && val.length) {
         const sorted = val.map(s => String(s).trim()).filter(Boolean).sort((a,b) => a.localeCompare(b,"id"));
         setStudents(sorted); saveStudentsLocal(batchKey, sorted);
       } else { setStudents([]); saveStudentsLocal(batchKey, []); }
+      const gVal = gSnap.val();
+      const gMap = (gVal && typeof gVal === "object") ? gVal : {};
+      setGenders(gMap); saveGendersLocal(batchKey, gMap);
       studentsLoadedFor.current = batchKey;
       setStudentsLoadedTick(t => t + 1);
     }).catch(() => {
@@ -1496,6 +1640,13 @@ useEffect(() => {
     saveStudentsLocal(batchKey, students);
     db.ref(studentsPath(batchKey)).set(students).catch(() => {});
   }, [students, batchKey, validSub]);
+
+  useEffect(() => {
+    if (!validSub) return;
+    if (studentsLoadedFor.current !== batchKey) return;
+    saveGendersLocal(batchKey, genders);
+    db.ref(gendersPath(batchKey)).set(genders || {}).catch(() => {});
+  }, [genders, batchKey, validSub]);
 
   useEffect(() => {
     if (!validSub) return;
@@ -1555,11 +1706,118 @@ useEffect(() => {
   }, [attendance, izinReasons, dateStr, students, loadingFb, batchKey, validSub]);
 
   const counts = useMemo(() => {
-    const c = { HADIR:0, SAKIT:0, IZIN:0, ALFA:0 };
-    list.forEach(n => { const st = normalizeStatus(attendance[n]); if (st) c[st]++; });
+    const c = { HADIR:0, SAKIT:0, IZIN:0, ALFA:0, HADIR_L:0, HADIR_P:0 };
+    list.forEach(n => {
+      const st = normalizeStatus(attendance[n]);
+      if (st) c[st]++;
+      if (st === "HADIR") {
+        const g = (genders[n] || "").toUpperCase();
+        if (g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN") c.HADIR_L++;
+        else if (g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT") c.HADIR_P++;
+      }
+    });
     return c;
-  }, [attendance, list]);
+  }, [attendance, list, genders]);
   const belum = list.length - (counts.HADIR + counts.SAKIT + counts.IZIN + counts.ALFA);
+
+  // trackGender aktif di SUB saat ini?
+  const currentTrackGender = useMemo(() => {
+    if (!validSub) return false;
+    const p = (programConfig.programs || []).find(x => x.id === program);
+    const s = p && (p.subs || []).find(x => String(x.id) === String(sub));
+    return !!(s && s.trackGender);
+  }, [programConfig, program, sub, validSub]);
+
+  // Label event per program
+  const currentEventLabel = useMemo(() => {
+    const p = (programConfig.programs || []).find(x => x.id === program);
+    const lbl = p && p.eventLabel ? String(p.eventLabel).trim() : "";
+    return lbl || "Amaliyah";
+  }, [programConfig, program]);
+
+  // Total Ikhwan/Akhwat hadir Se-program (hanya batch dengan jam buka-tutup yang sama)
+  const emptyProgGender = { L: 0, P: 0, unknown: 0, total: 0, batches: 0, loading: false, listL: [], listP: [], listU: [] };
+  const [progGender, setProgGender] = useState(emptyProgGender);
+  const [genderListModal, setGenderListModal] = useState(null); // "L" | "P" | "U" | "ALL"
+  const [genderListSearch, setGenderListSearch] = useState("");
+  useEffect(() => {
+    if (!roomCode || !validSub || !program || !currentTrackGender) {
+      setProgGender(emptyProgGender);
+      return;
+    }
+    const todayDow = date.getDay();
+    const curSched = resolveScheduleForBatch(batchKey, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
+    const schedKey = (s) => (s.enabled ? (s.open + "-" + s.close) : "always");
+    const curKey = schedKey(curSched);
+    const siblings = allBatchEntries
+      .filter(e => e.program === program)
+      .filter(e => {
+        const pObj = (programConfig.programs || []).find(x => x.id === e.program);
+        const sObj = pObj && (pObj.subs || []).find(x => String(x.id) === String(e.sub));
+        if (!sObj || !sObj.trackGender) return false;
+        const s = resolveScheduleForBatch(e.key, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
+        return schedKey(s) === curKey;
+      });
+    if (!siblings.length) {
+      setProgGender(emptyProgGender);
+      return;
+    }
+    let cancelled = false;
+    setProgGender(prev => ({ ...prev, loading: true }));
+    (async () => {
+      try {
+        const listL = [], listP = [], listU = [];
+        await Promise.all(siblings.map(async (ent) => {
+          const k = ent.key;
+          const [attSnap, gSnap, stuSnap] = await Promise.all([
+            db.ref(attendancePath(k, dateStr)).once("value"),
+            db.ref(gendersPath(k)).once("value"),
+            db.ref(studentsPath(k)).once("value")
+          ]);
+          const att = attSnap.val() || {};
+          const gMap = gSnap.val() || {};
+          let names = [];
+          const rawStu = stuSnap.val();
+          if (Array.isArray(rawStu)) names = rawStu.map(n => String(n).trim()).filter(Boolean);
+          else if (rawStu && typeof rawStu === "object") names = Object.keys(rawStu).map(x => String(rawStu[x]).trim()).filter(Boolean);
+          const nameSet = new Set(names);
+          Object.keys(att).forEach(rawKey => { nameSet.add(fromFbKey(rawKey)); });
+          nameSet.forEach(name => {
+            let st = null;
+            const item = att[toFbKey(name)] !== undefined ? att[toFbKey(name)] : att[name];
+            if (item && typeof item === "object") st = normalizeStatus(item.status);
+            else if (typeof item === "string") st = normalizeStatus(item);
+            if (!st) {
+              Object.keys(att).forEach(rk => {
+                if (fromFbKey(rk) === name) {
+                  const it = att[rk];
+                  if (it && typeof it === "object") st = normalizeStatus(it.status);
+                  else if (typeof it === "string") st = normalizeStatus(it);
+                }
+              });
+            }
+            if (st !== "HADIR") return;
+            const row = { name, batchKey: k, batchLabel: ent.label || k };
+            const g = String(gMap[name] || "").toUpperCase();
+            if (g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN") listL.push(row);
+            else if (g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT") listP.push(row);
+            else listU.push(row);
+          });
+        }));
+        const sortFn = (a, b) => a.name.localeCompare(b.name, "id");
+        listL.sort(sortFn); listP.sort(sortFn); listU.sort(sortFn);
+        if (!cancelled) setProgGender({
+          L: listL.length, P: listP.length, unknown: listU.length,
+          total: listL.length + listP.length + listU.length,
+          batches: siblings.length, loading: false,
+          listL, listP, listU
+        });
+      } catch {
+        if (!cancelled) setProgGender(prev => ({ ...prev, loading: false }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [roomCode, program, dateStr, validSub, allBatchEntries, attendance, genders, batchKey, currentTrackGender, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, date, programConfig]);
   const belumAbsenList = useMemo(
   () => list.filter(n => !normalizeStatus(attendance[n])),
   [list, attendance]
@@ -1922,6 +2180,7 @@ const applyBulkIzin = () => {
     setStudents(prev => prev.filter(n => n !== name));
     setAttendance(prev => { const n = { ...prev }; delete n[name]; return n; });
     setIzinReasons(prev => { const n = { ...prev }; delete n[name]; return n; });
+    setGenders(prev => { const n = { ...prev }; delete n[name]; return n; });
     setDeleteConfirm(null);
     toast(`✅ ${name} dihapus`);
   };
@@ -1957,6 +2216,10 @@ const applyBulkIzin = () => {
       if (Object.keys(updates).length) await db.ref().update(updates);
       setAttendance(prev => { if (prev[oldName] === undefined) return prev; const n = { ...prev }; n[newNameVal] = n[oldName]; delete n[oldName]; return n; });
       setIzinReasons(prev => { if (prev[oldName] === undefined) return prev; const n = { ...prev }; n[newNameVal] = n[oldName]; delete n[oldName]; return n; });
+      setGenders(prev => {
+        if (prev[oldName] === undefined) return prev;
+        const n = { ...prev }; n[newNameVal] = n[oldName]; delete n[oldName]; return n;
+      });
       setHistoryMap(prev => {
         const out = {};
         Object.keys(prev).forEach(ds => {
@@ -2037,7 +2300,7 @@ const applyBulkIzin = () => {
     setEditSaving(false);
   };
 
-  const resetToDefault = () => { setStudents([]); toast("✅ Daftar dikosongkan"); };
+  const resetToDefault = () => { setStudents([]); setGenders({}); toast("✅ Daftar dikosongkan"); };
 
   const loadAllStudents = async () => {
     if (allStudentsCache) return allStudentsCache;
@@ -2414,7 +2677,7 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
     if (!p) return;
     const subs = [...(p.subs || [])];
     const id = nextSubId(subs);
-    subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS] });
+    subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, amaliyah: {} });
     const newConfig = { programs: programConfig.programs.map(x => x.id === program ? { ...x, subs } : x) };
     try {
       await db.ref(metaPath("program_config")).set(newConfig);
@@ -2639,6 +2902,7 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
             studentCount: total,
             meta: r.meta && typeof r.meta === "object" ? r.meta : {},
             students: stu,
+            genders: r.genders && typeof r.genders === "object" ? r.genders : {},
             include: true
           };
         }).filter(x => x.targetCode);
@@ -2675,6 +2939,10 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
           if (!Array.isArray(arr) || !arr.length) return;
           stuUpdates[`${FB_ROOT}/rooms/${code}/batch_${bk}/students`] = arr.map(n => String(n).trim()).filter(Boolean);
         });
+        Object.keys(it.genders || {}).forEach(bk => {
+          const g = it.genders[bk];
+          if (g && typeof g === "object") stuUpdates[`${FB_ROOT}/rooms/${code}/batch_${bk}/genders`] = g;
+        });
         if (Object.keys(stuUpdates).length) await db.ref().update(stuUpdates);
         try {
           localStorage.removeItem("absensi_v2_config_" + code);
@@ -2693,7 +2961,7 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
     if (!confirm("Keluar dari kelas \"" + (roomName || roomCode) + "\"?\n\nData absensi tetap aman tersimpan di Firebase.")) return;
     try { localStorage.removeItem("absensi_current_room"); } catch {}
     setRoomCode(""); setCurrentRoom(""); setRoomName("");
-    setStudents([]); setAttendance({}); setIzinReasons({});
+    setStudents([]); setGenders({}); setAttendance({}); setIzinReasons({});
     setUndoStack([]); setRedoStack([]);
     if (isAdmin) {
       setShowAdminHub(true);
@@ -3084,6 +3352,65 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
   })
 ),
 
+        currentTrackGender && h("div", {
+          style: { marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", alignItems: "center" }
+        }, [
+          h("button", {
+            type: "button",
+            onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("L"); } },
+            style: { padding: "8px 14px", borderRadius: 12, background: "#eff6ff", border: "1px solid #bfdbfe", fontSize: 12, fontWeight: 700, color: "#1e40af", cursor: progGender.loading ? "wait" : "pointer" }
+          }, "👨 Ikhwan Hadir: " + (progGender.loading ? "…" : progGender.L)),
+          h("button", {
+            type: "button",
+            onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("P"); } },
+            style: { padding: "8px 14px", borderRadius: 12, background: "#fdf2f8", border: "1px solid #fbcfe8", fontSize: 12, fontWeight: 700, color: "#9d174d", cursor: progGender.loading ? "wait" : "pointer" }
+          }, "👩 Akhwat Hadir: " + (progGender.loading ? "…" : progGender.P)),
+          h("button", {
+            type: "button",
+            onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("ALL"); } },
+            style: { padding: "8px 14px", borderRadius: 12, background: "#f0fdf4", border: "1px solid #bbf7d0", fontSize: 12, fontWeight: 800, color: "#166534", cursor: progGender.loading ? "wait" : "pointer" }
+          }, "✅ Total Hadir: " + (progGender.loading ? "…" : progGender.total)),
+          (!progGender.loading && progGender.unknown > 0) && h("button", {
+            type: "button",
+            onClick: () => { setGenderListSearch(""); setGenderListModal("U"); },
+            style: { padding: "8px 14px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 700, color: "#64748b", cursor: "pointer" }
+          }, "❓ Belum ditandai: " + progGender.unknown),
+          (!progGender.loading && progGender.batches > 1) && h("div", { style: { fontSize: 11, fontWeight: 600, color: "#94a3b8", width: "100%", textAlign: "center", marginTop: 2 } },
+            "Diambil Dari " + progGender.batches + " batch · ketuk untuk melihat nama")
+        ]),
+
+        currentAmaliyah && h("div", {
+          style: {
+            marginTop: 16, padding: "14px 16px", borderRadius: 16,
+            background: "linear-gradient(135deg, #fefce8 0%, #fef3c7 100%)",
+            border: "1px solid #fde68a",
+            boxShadow: "0 4px 16px rgba(217,119,6,.08)"
+          }
+        }, [
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } }, [
+            h("span", { style: { fontSize: 18 } }, "📿"),
+            h("span", { style: { fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", color: "#92400e" } },
+              String(currentEventLabel).toUpperCase() + " HARI INI")
+          ]),
+          h("div", { style: { fontSize: 15, fontWeight: 800, color: "#78350f", lineHeight: 1.4 } }, currentAmaliyah.text),
+          currentAmaliyah.target > 0 && (() => {
+            // Pakai total hadir se-program (jam sama) kalau trackGender aktif, else hadir sub ini
+            const hadirForDiv = currentTrackGender
+              ? (progGender.loading ? counts.HADIR : progGender.total)
+              : counts.HADIR;
+            return h("div", { style: { marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" } }, [
+              h("span", { style: { fontSize: 12, fontWeight: 700, color: "#a16207", background: "#fffbeb", padding: "4px 10px", borderRadius: 999, border: "1px solid #fde68a" } },
+                "Target: " + currentAmaliyah.target),
+              h("span", { style: { fontSize: 12, fontWeight: 700, color: "#166534", background: "#f0fdf4", padding: "4px 10px", borderRadius: 999, border: "1px solid #bbf7d0" } },
+                "Hadir: " + (progGender.loading && currentTrackGender ? "…" : hadirForDiv) + " orang" + (currentTrackGender && progGender.batches > 1 ? " (Hadir)" : "")),
+              (!progGender.loading || !currentTrackGender) && hadirForDiv > 0
+                ? h("span", { style: { fontSize: 13, fontWeight: 800, color: "#9a3412", background: "#fff7ed", padding: "4px 12px", borderRadius: 999, border: "1px solid #fed7aa" } },
+                    "→ Per orang: " + Math.ceil(currentAmaliyah.target / hadirForDiv))
+                : ((!progGender.loading || !currentTrackGender) && h("span", { style: { fontSize: 12, fontWeight: 700, color: "#991b1b" } }, "Belum ada yang hadir"))
+            ]);
+          })()
+        ]),
+
           h("div", { style:{ marginTop:20, display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" } }, [
         h("button", { onClick: openBulkIzin, style: { height:44, padding:"0 18px", borderRadius:12, background:"#fff", border:"1px solid rgba(59,130,246,.35)", fontWeight:700, fontSize:13, color:"#1e40af", boxShadow:"0 1px 2px rgba(0,0,0,.05)", cursor:"pointer", display:"flex", alignItems:"center", gap:6 } }, "ℹ️ Izin Masal"),
         h("button", {
@@ -3151,14 +3478,27 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
           ]),
           h("div", { style: { maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 } },
             students.length === 0 && h("div", { style: { padding: 20, textAlign: "center", color: "#94a3b8", fontSize: 13, fontWeight: 600 } }, "Belum ada anggota."),
-            students.map((name, i) =>
-              h("div", { key: name, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12, background: i % 2 === 0 ? "#f8fafc" : "#fff", border: "1px solid rgba(0,0,0,.04)" } }, [
+            students.map((name, i) => {
+              const g = (genders[name] || "").toUpperCase();
+              const isL = g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN";
+              const isP = g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT";
+              return h("div", { key: name, style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 12, background: i % 2 === 0 ? "#f8fafc" : "#fff", border: "1px solid rgba(0,0,0,.04)" } }, [
                 h("span", { style: { width: 26, height: 26, borderRadius: 999, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, background: "#e2e8f0", color: "#475569" } }, i + 1),
-                h("span", { style: { flex: 1, fontWeight: 700, fontSize: 14, color: "#1e293b" } }, name),
+                h("span", { style: { flex: 1, fontWeight: 700, fontSize: 14, color: "#1e293b", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, name),
+                currentTrackGender && h("button", {
+                  onClick: () => setGenders(prev => ({ ...prev, [name]: isL ? "" : "L" })),
+                  title: "Tandai Ikhwan",
+                  style: { width: 30, height: 30, borderRadius: 8, border: isL ? "none" : "1px solid #bfdbfe", background: isL ? "#3b82f6" : "#eff6ff", color: isL ? "#fff" : "#1e40af", fontSize: 12, fontWeight: 800, cursor: "pointer" }
+                }, "♂"),
+                currentTrackGender && h("button", {
+                  onClick: () => setGenders(prev => ({ ...prev, [name]: isP ? "" : "P" })),
+                  title: "Tandai Akhwat",
+                  style: { width: 30, height: 30, borderRadius: 8, border: isP ? "none" : "1px solid #fbcfe8", background: isP ? "#ec4899" : "#fdf2f8", color: isP ? "#fff" : "#9d174d", fontSize: 12, fontWeight: 800, cursor: "pointer" }
+                }, "♀"),
                 h("button", { onClick: () => openRename(name), title: "Ganti nama", style: { width: 32, height: 32, borderRadius: 8, border: "none", background: "rgba(59,130,246,.1)", color: "#2563eb", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "✏️"),
                 h("button", { onClick: () => setDeleteConfirm(name), title: "Hapus", style: { width: 32, height: 32, borderRadius: 8, border: "none", background: "rgba(239,68,68,.1)", color: "#dc2626", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "🗑")
-              ])
-            )
+              ]);
+            })
           )
         ]),
 
@@ -3177,10 +3517,26 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
               style: { borderRadius:20, background: meta ? meta.bg : "#fff", border: `2px solid ${meta ? meta.border : "rgba(0,0,0,.06)"}`, padding:"16px 18px", boxShadow:"0 8px 30px rgba(0,0,0,.04)", transition:"all .3s" }
             }, [
               h("div", { style:{ display:"flex", gap:12, alignItems:"flex-start" } }, [
-                h("div", { style: { width:32, height:32, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background: meta ? "#fff" : "#f4f4f5", color: meta ? meta.border : "rgba(0,0,0,.4)", border: `1px solid ${meta ? meta.border : "rgba(0,0,0,.06)"}` } }, idx + 1),
+                (() => {
+                  const g = (genders[name] || "").toUpperCase();
+                  const isL = currentTrackGender && (g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN");
+                  const isP = currentTrackGender && (g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT");
+                  let bg = meta ? "#fff" : "#f4f4f5";
+                  let color = meta ? meta.border : "rgba(0,0,0,.4)";
+                  let border = `1px solid ${meta ? meta.border : "rgba(0,0,0,.06)"}`;
+                  if (isL) { bg = "#dbeafe"; color = "#2563eb"; border = "1px solid #93c5fd"; }
+                  else if (isP) { bg = "#fce7f3"; color = "#db2777"; border = "1px solid #f9a8d4"; }
+                  return h("div", { style: { width:32, height:32, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background: bg, color, border } }, idx + 1);
+                })(),
                 h("div", { style:{ minWidth:0, flex:1 } }, [
                   h("div", { style:{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" } }, [
                     h("span", { style: { fontWeight:800, fontSize:15, color: meta ? meta.text : "#111", letterSpacing:"-0.025em" } }, name),
+                    currentTrackGender && (() => {
+                      const g = (genders[name] || "").toUpperCase();
+                      if (g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN") return h("span", { style: { fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 999, background: "#dbeafe", color: "#1e40af" } }, "♂");
+                      if (g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT") return h("span", { style: { fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 999, background: "#fce7f3", color: "#9d174d" } }, "♀");
+                      return null;
+                    })(),
                     (st && meta) ? h("span", { key: st + "-" + (izinReasons[name] || ""), className: "status-chip-pop", style: { fontSize:10, fontWeight:800, letterSpacing:"0.1em", padding:"2px 8px", borderRadius:999, background:"#fff", border: `1px solid ${meta.border}`, color: meta.text } }, `${meta.icon} ${st}`)
                       : h("span", { style: { fontSize:10, fontWeight:700, letterSpacing:"0.1em", padding:"2px 8px", borderRadius:999, background:"rgba(0,0,0,.04)", color:"rgba(0,0,0,.3)" } }, "BELUM"),
                     isAdmin && h("button", { onClick: () => openEditStudent(name), title: "Edit absensi", style: { marginLeft: "auto", flexShrink: 0, height: 26, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(0,0,0,.12)", background: "#fff", color: "#0f172a", fontWeight: 800, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 } }, "✏️ EDIT")
@@ -3710,6 +4066,63 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
     ])
   ])
 ]),
+genderListModal && h("div", { style: { position:"fixed", inset:0, zIndex:196, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
+  h("div", { onClick: () => setGenderListModal(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
+  h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
+    h("button", { onClick: () => setGenderListModal(null), style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
+    (() => {
+      const titles = { L: "👨 Ikhwan Hadir", P: "👩 Akhwat Hadir", U: "❓ Belum ditandai", ALL: "✅ Total Hadir" };
+      const colors = { L: "#1e40af", P: "#9d174d", U: "#64748b", ALL: "#166534" };
+      const bgs = { L: "#eff6ff", P: "#fdf2f8", U: "#f8fafc", ALL: "#f0fdf4" };
+      let rows = [];
+      if (genderListModal === "L") rows = progGender.listL || [];
+      else if (genderListModal === "P") rows = progGender.listP || [];
+      else if (genderListModal === "U") rows = progGender.listU || [];
+      else rows = [...(progGender.listL || []), ...(progGender.listP || []), ...(progGender.listU || [])].sort((a, b) => a.name.localeCompare(b.name, "id"));
+      const q = genderListSearch.trim().toLowerCase();
+      const searched = q ? rows.filter(r => r.name.toLowerCase().includes(q) || (r.batchLabel || "").toLowerCase().includes(q)) : rows;
+      const showBatch = progGender.batches > 1;
+      return h("div", { style: { display: "flex", flexDirection: "column", minHeight: 0 } }, [
+        h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:4, paddingRight:30, color: colors[genderListModal] || "#0f172a" } }, titles[genderListModal] || "Daftar"),
+        h("div", { style:{ fontSize:12, color:"#64748b", marginBottom:12, fontWeight:600, lineHeight: 1.5 } },
+          [programLabel || program, " · ", formatDateAbsensi(date), progGender.batches > 1 ? (" · " + progGender.batches + " batch") : ""]),
+        rows.length === 0
+          ? h("div", { style:{ padding:36, textAlign:"center", background: bgs[genderListModal] || "#f8fafc", border:"1px dashed #cbd5e1", borderRadius:14 } }, [
+              h("div", { style:{ fontSize: 40, marginBottom: 6 } }, "📭"),
+              h("div", { style:{ fontSize:14, fontWeight:800, color:"#64748b" } }, "Belum ada data"),
+            ])
+          : h("div", null, [
+              h("input", {
+                type: "text", value: genderListSearch,
+                onChange: e => setGenderListSearch(e.target.value),
+                placeholder: "Cari nama" + (showBatch ? " / batch..." : "..."),
+                style: { width: "100%", height: 38, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none", marginBottom: 10 }
+              }),
+              h("div", { style:{ overflowY:"auto", maxHeight:"48vh", border:"1px solid #e2e8f0", borderRadius:12 } },
+                searched.length === 0
+                  ? h("div", { style:{ padding:20, textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:600 } }, ["Tidak ada: ", h("strong", null, `"${genderListSearch}"`)])
+                  : searched.map((r, i) => {
+                      const gBadge = (progGender.listL || []).some(x => x.name === r.name && x.batchKey === r.batchKey) ? "♂"
+                        : (progGender.listP || []).some(x => x.name === r.name && x.batchKey === r.batchKey) ? "♀" : "?";
+                      return h("div", { key: r.batchKey + "-" + r.name + "-" + i, style:{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderBottom: i < searched.length-1 ? "1px solid #f1f5f9" : "none" } }, [
+                        h("span", { style:{ width:26, height:26, borderRadius:999, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, background: bgs[genderListModal] || "#f1f5f9", color: colors[genderListModal] || "#475569" } }, i + 1),
+                        h("div", { style: { flex: 1, minWidth: 0 } }, [
+                          h("div", { style:{ fontWeight:700, fontSize:13, color:"#1e293b", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" } }, r.name),
+                          showBatch && h("div", { style:{ fontSize:11, fontWeight:600, color:"#94a3b8", marginTop: 2 } }, r.batchLabel)
+                        ]),
+                        genderListModal === "ALL" && h("span", { style: { fontSize: 12, fontWeight: 800, color: gBadge === "♂" ? "#1e40af" : gBadge === "♀" ? "#9d174d" : "#64748b", flexShrink: 0 } }, gBadge)
+                      ]);
+                    })
+              ),
+              h("div", { style:{ fontSize:12, fontWeight:800, color: colors[genderListModal] || "#0f172a", marginTop:12, textAlign:"center", padding:"8px", background: bgs[genderListModal] || "#f8fafc", borderRadius:10 } },
+                searched.length !== rows.length
+                  ? `${searched.length} dari ${rows.length} orang (difilter)`
+                  : `${rows.length} orang`)
+            ])
+      ]);
+    })()
+  ])
+]),
 statusListModal && h("div", { style: { position:"fixed", inset:0, zIndex:195, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
   h("div", { onClick: () => setStatusListModal(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
   h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
@@ -4100,10 +4513,10 @@ h("button", {
 
     showSettings && h("div", { style: { position:"fixed", inset:0, zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
       h("div", { onClick: () => setShowSettings(false), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
-      h("div", { style: { position:"relative", width:"100%", maxWidth:640, maxHeight:"92vh", overflowY:"auto", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease" } }, [
-        h("button", { onClick: () => setShowSettings(false), style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
-        h("div", { style:{ fontSize:16, fontWeight:800, marginBottom:6, paddingRight: 30 } }, "⚙️ Pengaturan Kelas"),
-        h("div", { style:{ fontSize:12, color:"#64748b", marginBottom:18, lineHeight:1.45 } }, "Berlaku untuk kelas \"" + (roomName || roomCode) + "\"."),
+      h("div", { style: { position:"relative", width:"100%", maxWidth:640, maxHeight:"90vh", overflowY:"auto", borderRadius:20, background:"#fff", padding: "16px 14px 20px", boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", WebkitOverflowScrolling: "touch" } }, [
+        h("button", { onClick: () => setShowSettings(false), style: { position:"absolute", right:10, top:10, width:30, height:30, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, zIndex: 2 } }, "✕"),
+        h("div", { style:{ fontSize:15, fontWeight:800, marginBottom:4, paddingRight: 28 } }, "⚙️ Pengaturan Kelas"),
+        h("div", { style:{ fontSize:11, color:"#64748b", marginBottom:12, lineHeight:1.4 } }, "Berlaku untuk kelas \"" + (roomName || roomCode) + "\"."),
 
         h("div", { style:{ fontSize:13, fontWeight:800, marginBottom:8, color:"#0f172a" } }, "📝 Judul & Kegiatan"),
         h("div", { style:{ display:"flex", flexDirection:"column", gap:8, marginBottom: 18 } }, [
@@ -4135,16 +4548,26 @@ h("button", {
           h("span", null, "🏷️ Program & Sub"),
           h("button", { onClick: draftAddProgram, style: { height: 32, padding: "0 12px", borderRadius: 10, border: "none", background: "#0f172a", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" } }, "➕ Tambah Program")
         ]),
-        h("div", { style:{ fontSize: 11, color:"#94a3b8", marginBottom: 10, lineHeight: 1.5 } }, "Tiap program punya sub sendiri. Hari aktif & jadwal buka/tutup diatur per sub."),
+        h("div", { style:{ fontSize: 11, color:"#94a3b8", marginBottom: 10, lineHeight: 1.5 } }, "Gender per sub · Nama event per program · Event/target diisi per hari di sub."),
         h("div", { style:{ display:"flex", flexDirection: "column", gap: 12, marginBottom: 18 } },
           (configDraft.programs || []).map((p, pIdx) => {
             const th = THEME_PALETTE[pIdx % THEME_PALETTE.length];
             const subCount = (p.subs || []).length;
-            return h("div", { key: p.id, style: { borderRadius: 14, border: "1px solid #e2e8f0", padding: 12, background: "#fafbff" } }, [
-              h("div", { style:{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, flexWrap: "wrap" } }, [
-                h("span", { style:{ padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 800, background: th.accent, color: "#fff", flexShrink: 0 } }, p.id),
-                h("input", { type: "text", value: p.label || "", onChange: e => draftUpdateProgramLabel(p.id, e.target.value), placeholder: "Nama program", style: { flex: 1, minWidth: 140, height: 38, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 700, outline: "none" } }),
-                h("button", { onClick: () => setProgramDeleteConfirm({ id: p.id, label: p.label || p.id, subCount }), disabled: (configDraft.programs || []).length <= 1, title: (configDraft.programs || []).length <= 1 ? "Minimal 1 program" : "Hapus program", style: { width: 36, height: 36, borderRadius: 8, border: "1px solid rgba(239,68,68,.25)", background: "#fff", color: "#dc2626", fontSize: 14, cursor: (configDraft.programs || []).length <= 1 ? "not-allowed" : "pointer", opacity: (configDraft.programs || []).length <= 1 ? 0.35 : 1 } }, "🗑")
+            return h("div", { key: p.id, style: { borderRadius: 14, border: "1px solid #e2e8f0", padding: 10, background: "#fafbff" } }, [
+              h("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom: 8, flexWrap: "wrap" } }, [
+                h("span", { style:{ padding: "3px 8px", borderRadius: 999, fontSize: 11, fontWeight: 800, background: th.accent, color: "#fff", flexShrink: 0 } }, p.id),
+                h("input", { type: "text", value: p.label || "", onChange: e => draftUpdateProgramLabel(p.id, e.target.value), placeholder: "Nama program", style: { flex: 1, minWidth: 100, height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 700, outline: "none" } }),
+                h("button", { onClick: () => setProgramDeleteConfirm({ id: p.id, label: p.label || p.id, subCount }), disabled: (configDraft.programs || []).length <= 1, title: (configDraft.programs || []).length <= 1 ? "Minimal 1 program" : "Hapus program", style: { width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(239,68,68,.25)", background: "#fff", color: "#dc2626", fontSize: 13, cursor: (configDraft.programs || []).length <= 1 ? "not-allowed" : "pointer", opacity: (configDraft.programs || []).length <= 1 ? 0.35 : 1 } }, "🗑")
+              ]),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 8 } }, [
+                h("span", { style: { fontSize: 10, fontWeight: 800, color: "#92400e", flexShrink: 0 } }, "📿 Nama event:"),
+                h("input", {
+                  type: "text",
+                  value: p.eventLabel || "",
+                  onChange: e => draftUpdateProgramEventLabel(p.id, e.target.value),
+                  placeholder: "Amaliyah / Event / …",
+                  style: { flex: 1, height: 30, padding: "0 8px", borderRadius: 8, border: "1px solid #fde68a", background: "#fffbeb", fontSize: 12, fontWeight: 600, outline: "none" }
+                })
               ]),
               h("div", { style:{ fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 6, letterSpacing: "0.04em" } }, "SUB (" + subCount + ")"),
               subCount === 0 && h("div", { style: { padding: "8px 12px", borderRadius: 8, background: "#f8fafc", fontSize: 11, color: "#94a3b8", fontWeight: 600, textAlign: "center", marginBottom: 8, border: "1px dashed #cbd5e1" } }, "Belum ada sub"),
@@ -4153,28 +4576,66 @@ h("button", {
                   const hasCustom = !!subSchedules[makeBatchKey(p.id, s.id)];
                   const days = Array.isArray(s.days) && s.days.length ? s.days : ALL_DAYS;
                   return h("div", { key: s.id, style:{ border: "1px solid #eef2f7", borderRadius: 10, padding: 8, background: "#fff" } }, [
-                    h("div", { style:{ display: "flex", alignItems: "center", gap: 6 } }, [
-                      h("span", { style:{ width: 24, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#94a3b8" } }, i+1),
-                      h("input", { type: "text", value: s.emoji || "", onChange: e => draftUpdateSubEmoji(p.id, s.id, e.target.value), placeholder: "🎌", maxLength: 4, style: { width: 48, height: 36, padding: "0 6px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 16, textAlign: "center", outline: "none", background: "#fff" } }),
-                      h("input", { type: "text", value: s.label || "", onChange: e => draftUpdateSubLabel(p.id, s.id, e.target.value), placeholder: "Sub " + s.id, style: { flex: 1, height: 36, padding: "0 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none", background: "#fff" } }),
-                      hasCustom && h("span", { title: "Punya jadwal jam khusus", style:{ fontSize: 11, fontWeight: 800, color: "#7c3aed", background: "#f5f3ff", border: "1px solid #ddd6fe", padding: "2px 6px", borderRadius: 999 } }, "⏱"),
-                      h("span", { style:{ fontSize: 10, fontWeight: 700, color: "#cbd5e1", minWidth: 32, textAlign: "right" } }, "id:" + s.id),
-                      h("button", { onClick: () => setSubDeleteConfirm({ program: p.id, subId: s.id, subLabel: s.label || ("Sub " + s.id) }), title: "Hapus sub", style: { width: 30, height: 30, borderRadius: 8, border: "none", background: "rgba(239,68,68,.1)", color: "#dc2626", fontSize: 13, cursor: "pointer" } }, "×")
+                    h("div", { style:{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" } }, [
+                      h("span", { style:{ width: 20, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#94a3b8" } }, i+1),
+                      h("input", { type: "text", value: s.emoji || "", onChange: e => draftUpdateSubEmoji(p.id, s.id, e.target.value), placeholder: "🎌", maxLength: 4, style: { width: 40, height: 32, padding: "0 4px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14, textAlign: "center", outline: "none", background: "#fff" } }),
+                      h("input", { type: "text", value: s.label || "", onChange: e => draftUpdateSubLabel(p.id, s.id, e.target.value), placeholder: "Sub " + s.id, style: { flex: 1, minWidth: 80, height: 32, padding: "0 8px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12, fontWeight: 600, outline: "none", background: "#fff" } }),
+                      h("label", {
+                        title: "Hitung Ikhwan/Akhwat di sub ini",
+                        style: {
+                          display: "inline-flex", alignItems: "center", gap: 3, height: 28, padding: "0 7px", borderRadius: 8,
+                          border: s.trackGender ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+                          background: s.trackGender ? "#eff6ff" : "#fff",
+                          fontSize: 10, fontWeight: 800, color: s.trackGender ? "#1e40af" : "#94a3b8", cursor: "pointer", flexShrink: 0
+                        }
+                      }, [
+                        h("input", { type: "checkbox", checked: !!s.trackGender, onChange: () => draftToggleSubTrackGender(p.id, s.id), style: { width: 12, height: 12, accentColor: "#2563eb" } }),
+                        "♂♀"
+                      ]),
+                      hasCustom && h("span", { title: "Jadwal khusus", style:{ fontSize: 10, fontWeight: 800, color: "#7c3aed", background: "#f5f3ff", border: "1px solid #ddd6fe", padding: "2px 5px", borderRadius: 999 } }, "⏱"),
+                      h("button", { onClick: () => setSubDeleteConfirm({ program: p.id, subId: s.id, subLabel: s.label || ("Sub " + s.id) }), title: "Hapus sub", style: { width: 28, height: 28, borderRadius: 8, border: "none", background: "rgba(239,68,68,.1)", color: "#dc2626", fontSize: 12, cursor: "pointer" } }, "×")
                     ]),
-                    h("div", { style:{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6, paddingLeft: 30, alignItems: "center" } }, [
-                      h("span", { style:{ fontSize: 10, fontWeight: 800, color: "#94a3b8", marginRight: 4, letterSpacing: "0.05em" } }, "HARI AKTIF:"),
+                    h("div", { style:{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 5, alignItems: "center" } }, [
+                      h("span", { style:{ fontSize: 9, fontWeight: 800, color: "#94a3b8", marginRight: 2 } }, "HARI:"),
                       ...HARI_OPTIONS.map(o => {
                         const on = days.includes(o.value);
                         return h("button", {
                           key: o.value, type: "button",
                           onClick: () => draftToggleSubDay(p.id, s.id, o.value),
                           style: {
-                            height: 26, padding: "0 10px", borderRadius: 999, fontSize: 10, fontWeight: 800, cursor: "pointer",
+                            height: 22, padding: "0 7px", borderRadius: 999, fontSize: 9, fontWeight: 800, cursor: "pointer",
                             border: on ? "none" : "1px solid #cbd5e1",
                             background: on ? "#0f172a" : "#fff",
                             color: on ? "#fff" : "#64748b"
                           }
                         }, o.label.slice(0, 3));
+                      })
+                    ]),
+                    h("div", { style: { marginTop: 5 } }, [
+                      h("div", { style: { fontSize: 9, fontWeight: 800, color: "#92400e", marginBottom: 3 } },
+                        "📿 " + String(p.eventLabel || "Event").toUpperCase() + " (opsional)"),
+                      ...HARI_OPTIONS.filter(o => days.includes(o.value)).map(o => {
+                        const ama = (s.amaliyah && s.amaliyah[String(o.value)]) || { text: "", target: 0 };
+                        return h("div", {
+                          key: "ama-" + o.value,
+                          style: { display: "flex", gap: 4, alignItems: "center", marginBottom: 3 }
+                        }, [
+                          h("span", { style: { width: 28, fontSize: 9, fontWeight: 800, color: "#64748b", flexShrink: 0 } }, o.label.slice(0, 3)),
+                          h("input", {
+                            type: "text",
+                            value: ama.text || "",
+                            onChange: e => draftUpdateSubAmaliyah(p.id, s.id, o.value, "text", e.target.value),
+                            placeholder: "teks event…",
+                            style: { flex: 1, minWidth: 0, height: 26, padding: "0 6px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 11, fontWeight: 600, outline: "none", background: "#fff" }
+                          }),
+                          h("input", {
+                            type: "number", min: 0,
+                            value: ama.target || "",
+                            onChange: e => draftUpdateSubAmaliyah(p.id, s.id, o.value, "target", e.target.value),
+                            placeholder: "×",
+                            style: { width: 52, height: 26, padding: "0 4px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 11, fontWeight: 700, outline: "none", textAlign: "center", background: "#fff" }
+                          })
+                        ]);
                       })
                     ])
                   ]);
