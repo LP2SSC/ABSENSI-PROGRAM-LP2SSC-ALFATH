@@ -151,6 +151,13 @@ function normalizeSubs(rawSubs) {
       emoji: Array.from(String(s.emoji || "")).slice(0, 4).join(""),
       days: normalizeProgramDays(s.days),
       trackGender: s.trackGender === true || s.trackGender === "true" || s.trackGender === 1,
+      enableEvent: (() => {
+        if (s.enableEvent === true || s.enableEvent === "true" || s.enableEvent === 1) return true;
+        if (s.enableEvent === false || s.enableEvent === "false" || s.enableEvent === 0) return false;
+        // migrasi: kalau sudah ada isi amaliyah, anggap aktif
+        const ama = normalizeAmaliyah(s.amaliyah);
+        return Object.keys(ama).some(k => ama[k] && ama[k].text);
+      })(),
       amaliyah: normalizeAmaliyah(s.amaliyah)
     }))
     .filter(s => s.id);
@@ -687,6 +694,7 @@ function AbsensiApp() {
   const [izinDraft, setIzinDraft] = useState(() => loadIzinOptionsLocal(roomCode));
   const [newIzinDraft, setNewIzinDraft] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [eventEditPopup, setEventEditPopup] = useState(null); // { pId, subId } | null
   const [backupBusy, setBackupBusy] = useState(false);
   const [importPreview, setImportPreview] = useState(null);
 
@@ -857,12 +865,18 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
     if (!validSub) return null;
     const p = (programConfig.programs || []).find(x => x.id === program);
     const s = p && (p.subs || []).find(x => String(x.id) === String(sub));
-    if (!s || !s.amaliyah) return null;
+    if (!s || !s.enableEvent || !s.amaliyah) return null;
     const day = date.getDay();
     const a = s.amaliyah[String(day)];
     if (!a || !a.text) return null;
     return { text: a.text, target: Math.max(0, a.target | 0) };
   }, [programConfig, program, sub, validSub, date]);
+  const currentSubEnableEvent = useMemo(() => {
+    if (!validSub) return false;
+    const p = (programConfig.programs || []).find(x => x.id === program);
+    const s = p && (p.subs || []).find(x => String(x.id) === String(sub));
+    return !!(s && s.enableEvent);
+  }, [programConfig, program, sub, validSub]);
 
   const isDateActiveForCurrentSub = (d = date) => {
     const ds = toInputDate(d);
@@ -910,28 +924,24 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
 
   useEffect(() => { if (appMode === "siswa") { setDate(wibToday()); setShowManage(false); } }, [appMode]);
 
-  // Auto-pilih sub yang sedang buka saat siswa join / saat schedule ready
+  // Auto-pilih sub yang sedang buka saat siswa join (sekali per room)
+  const autoJoinDoneRef = useRef("");
   useEffect(() => {
     if (appMode !== "siswa" || !roomCode || !scheduleReady) return;
+    if (!allBatchEntries.length) return;
+    // Sudah pernah auto-join di room ini
+    if (autoJoinDoneRef.current === roomCode) return;
     const wib = getWibParts();
     const nowMin = wib.hour * 60 + wib.minute;
     const todayDow = new Date().getDay();
-    // Cek apakah batch sekarang sudah buka
-    const curSched = resolveScheduleForBatch(batchKey, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
-    const pCur = (programConfig.programs || []).find(x => x.id === programOfBatch(batchKey));
-    const sCur = pCur && (pCur.subs || []).find(x => String(x.id) === String(subOfBatch(batchKey)));
-    const daysCur = (sCur && Array.isArray(sCur.days) && sCur.days.length) ? sCur.days : ALL_DAYS;
-    const curActive = daysCur.includes(todayDow);
-    const curOpen = curActive && (!curSched.enabled || isTimeWithin(nowMin, curSched.open, curSched.close));
-    if (curOpen) return;
-    // Cari batch lain yang buka
+    // Prefer batch yang hari aktif + jam buka
     let found = null;
     for (const ent of allBatchEntries) {
-      if (ent.key === batchKey) continue;
       const pId = programOfBatch(ent.key), sId = subOfBatch(ent.key);
       const pObj = (programConfig.programs || []).find(x => x.id === pId);
       const sObj = pObj && (pObj.subs || []).find(x => String(x.id) === String(sId));
-      const subDays = (sObj && Array.isArray(sObj.days) && sObj.days.length) ? sObj.days : ALL_DAYS;
+      if (!sObj) continue;
+      const subDays = (Array.isArray(sObj.days) && sObj.days.length) ? sObj.days : ALL_DAYS;
       if (!subDays.includes(todayDow)) continue;
       const sched = resolveScheduleForBatch(ent.key, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, todayDow);
       if (!sched.enabled || isTimeWithin(nowMin, sched.open, sched.close)) {
@@ -939,11 +949,16 @@ const [bulkIzinSearch, setBulkIzinSearch] = useState("");
         break;
       }
     }
-    if (found) {
+    autoJoinDoneRef.current = roomCode;
+    if (found && found !== batchKey) {
       setBatchKey(found);
       toast("📌 Otomatis pindah ke sub yang sedang buka");
     }
-  }, [appMode, roomCode, scheduleReady, programConfig, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, allBatchEntries]);
+  }, [appMode, roomCode, scheduleReady, programConfig, subSchedules, autoOpenMin, autoResetMin, autoResetEnabled, allBatchEntries, batchKey]);
+  // Reset flag saat keluar room
+  useEffect(() => {
+    if (!roomCode) autoJoinDoneRef.current = "";
+  }, [roomCode]);
 
   useEffect(() => {
     if (!programConfig.programs || !programConfig.programs.length) return;
@@ -1463,13 +1478,24 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
       })
     }));
   };
+  const draftToggleSubEnableEvent = (pId, subId) => {
+    setConfigDraft(prev => ({
+      programs: (prev.programs || []).map(p => {
+        if (p.id !== pId) return p;
+        return {
+          ...p,
+          subs: (p.subs || []).map(s => String(s.id) === String(subId) ? { ...s, enableEvent: !s.enableEvent } : s)
+        };
+      })
+    }));
+  };
   const draftAddSub = (pId) => {
     setConfigDraft(prev => ({
       programs: (prev.programs || []).map(p => {
         if (p.id !== pId) return p;
         const subs = [...(p.subs || [])];
         const id = nextSubId(subs);
-        subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, amaliyah: {} });
+        subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, enableEvent: false, amaliyah: {} });
         return { ...p, subs };
       })
     }));
@@ -1537,6 +1563,7 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({});
           emoji: Array.from(String(s.emoji || "")).slice(0, 4).join(""),
           days: normalizeProgramDays(s.days),
           trackGender: s.trackGender === true,
+          enableEvent: s.enableEvent === true,
           amaliyah: normalizeAmaliyah(s.amaliyah)
         })).filter(s => s.id);
         clean.programs.push({
@@ -2677,7 +2704,7 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
     if (!p) return;
     const subs = [...(p.subs || [])];
     const id = nextSubId(subs);
-    subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, amaliyah: {} });
+    subs.push({ id, label: "Sub " + id, emoji: "", days: [...ALL_DAYS], trackGender: false, enableEvent: false, amaliyah: {} });
     const newConfig = { programs: programConfig.programs.map(x => x.id === program ? { ...x, subs } : x) };
     try {
       await db.ref(metaPath("program_config")).set(newConfig);
@@ -3270,12 +3297,23 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
           }, "⚠️ Belum ada sub untuk program ini. " + (isAdmin ? "Tambahkan sub dulu." : "Hubungi guru/admin."))
         ]),
 
-        h("div", { style:{ padding:"8px 20px 16px" } }, [
+        currentAmaliyah && h("div", { style:{ padding:"8px 20px 16px" } }, [
           h("div", { style: { display:"flex", alignItems:"center", gap:12, padding:"14px 18px", borderRadius:16, background: theme.accent, color: "#fff", boxShadow: "0 6px 20px rgba(0,0,0,.18)" } }, [
-            h("span", { style:{ fontSize:22 } }, generalSettings.kegiatanIcon),
+            h("span", { style:{ fontSize:22 } }, "📿"),
             h("div", { style:{ flex:1, minWidth: 0 } }, [
-              h("div", { style:{ fontSize:11, fontWeight:700, letterSpacing:"0.12em", opacity:0.85 } }, "KEGIATAN"),
-              h("div", { style:{ fontSize:16, fontWeight:800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, generalSettings.kegiatan)
+              h("div", { style:{ fontSize:11, fontWeight:700, letterSpacing:"0.12em", opacity:0.85 } },
+                String(currentEventLabel || "KEGIATAN").toUpperCase()),
+              h("div", { style:{ fontSize:15, fontWeight:800, lineHeight: 1.3 } }, currentAmaliyah.text),
+              currentAmaliyah.target > 0 && (() => {
+                const hadirForDiv = currentTrackGender
+                  ? (progGender.loading ? 0 : progGender.total)
+                  : (counts.HADIR || 0);
+                return h("div", { style: { fontSize: 11, fontWeight: 700, opacity: 0.9, marginTop: 4 } },
+                  "Target " + currentAmaliyah.target
+                  + (hadirForDiv > 0 ? (" · Per orang " + Math.ceil(currentAmaliyah.target / hadirForDiv)) : "")
+                  + (currentTrackGender && progGender.batches > 1 ? " X Dibaca" : "")
+                );
+              })()
             ]),
             h("span", { style: { fontSize:11, fontWeight:700, letterSpacing:"0.1em", padding:"6px 12px", borderRadius:999, background:"rgba(255,255,255,.25)", flexShrink: 0 } }, `${list.length} SISWA`)
           ])
@@ -3377,38 +3415,6 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
           }, "❓ Belum ditandai: " + progGender.unknown),
           (!progGender.loading && progGender.batches > 1) && h("div", { style: { fontSize: 11, fontWeight: 600, color: "#94a3b8", width: "100%", textAlign: "center", marginTop: 2 } },
             "Dari " + progGender.batches + " batch (jam sama) · ketuk untuk lihat nama")
-        ]),
-
-        currentAmaliyah && h("div", {
-          style: {
-            marginTop: 16, padding: "14px 16px", borderRadius: 16,
-            background: "linear-gradient(135deg, #fefce8 0%, #fef3c7 100%)",
-            border: "1px solid #fde68a",
-            boxShadow: "0 4px 16px rgba(217,119,6,.08)"
-          }
-        }, [
-          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } }, [
-            h("span", { style: { fontSize: 18 } }, "📿"),
-            h("span", { style: { fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", color: "#92400e" } },
-              String(currentEventLabel).toUpperCase() + " HARI INI")
-          ]),
-          h("div", { style: { fontSize: 15, fontWeight: 800, color: "#78350f", lineHeight: 1.4 } }, currentAmaliyah.text),
-          currentAmaliyah.target > 0 && (() => {
-            // Pakai total hadir se-program (jam sama) kalau trackGender aktif, else hadir sub ini
-            const hadirForDiv = currentTrackGender
-              ? (progGender.loading ? counts.HADIR : progGender.total)
-              : counts.HADIR;
-            return h("div", { style: { marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" } }, [
-              h("span", { style: { fontSize: 12, fontWeight: 700, color: "#a16207", background: "#fffbeb", padding: "4px 10px", borderRadius: 999, border: "1px solid #fde68a" } },
-                "Target: " + currentAmaliyah.target),
-              h("span", { style: { fontSize: 12, fontWeight: 700, color: "#166534", background: "#f0fdf4", padding: "4px 10px", borderRadius: 999, border: "1px solid #bbf7d0" } },
-                "Hadir: " + (progGender.loading && currentTrackGender ? "…" : hadirForDiv) + " orang" + (currentTrackGender && progGender.batches > 1 ? " (se-program)" : "")),
-              (!progGender.loading || !currentTrackGender) && hadirForDiv > 0
-                ? h("span", { style: { fontSize: 13, fontWeight: 800, color: "#9a3412", background: "#fff7ed", padding: "4px 12px", borderRadius: 999, border: "1px solid #fed7aa" } },
-                    "→ Per orang: " + Math.ceil(currentAmaliyah.target / hadirForDiv))
-                : ((!progGender.loading || !currentTrackGender) && h("span", { style: { fontSize: 12, fontWeight: 700, color: "#991b1b" } }, "Belum ada yang hadir"))
-            ]);
-          })()
         ]),
 
           h("div", { style:{ marginTop:20, display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" } }, [
@@ -4066,6 +4072,46 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
     ])
   ])
 ]),
+eventEditPopup && (() => {
+  const pObj = (configDraft.programs || []).find(x => x.id === eventEditPopup.pId);
+  const sObj = pObj && (pObj.subs || []).find(x => String(x.id) === String(eventEditPopup.subId));
+  if (!pObj || !sObj) return null;
+  const days = Array.isArray(sObj.days) && sObj.days.length ? sObj.days : ALL_DAYS;
+  const labelEv = String(pObj.eventLabel || "Event").toUpperCase();
+  return h("div", { style: { position:"fixed", inset:0, zIndex:220, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
+    h("div", { onClick: () => setEventEditPopup(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
+    h("div", { style: { position:"relative", width:"100%", maxWidth:440, maxHeight:"88vh", overflowY:"auto", borderRadius:20, background:"#fff", padding:18, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease" } }, [
+      h("button", { onClick: () => setEventEditPopup(null), style: { position:"absolute", right:10, top:10, width:30, height:30, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", fontSize:13 } }, "✕"),
+      h("div", { style:{ fontSize:15, fontWeight:800, marginBottom:4, paddingRight:28, color:"#92400e" } }, "📿 Edit " + labelEv),
+      h("div", { style:{ fontSize:12, color:"#64748b", marginBottom:12, fontWeight:600 } }, (sObj.label || ("Sub " + sObj.id)) + " · hanya hari aktif"),
+      ...HARI_OPTIONS.filter(o => days.includes(o.value)).map(o => {
+        const ama = (sObj.amaliyah && sObj.amaliyah[String(o.value)]) || { text: "", target: 0 };
+        return h("div", { key: "pev-" + o.value, style: { display: "flex", gap: 6, alignItems: "center", marginBottom: 8 } }, [
+          h("span", { style: { width: 36, fontSize: 11, fontWeight: 800, color: "#64748b", flexShrink: 0 } }, o.label.slice(0, 3)),
+          h("input", {
+            type: "text",
+            value: ama.text || "",
+            onChange: e => draftUpdateSubAmaliyah(eventEditPopup.pId, eventEditPopup.subId, o.value, "text", e.target.value),
+            placeholder: "teks agenda…",
+            style: { flex: 1, minWidth: 0, height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid #e2e8f0", fontSize: 13, fontWeight: 600, outline: "none" }
+          }),
+          h("input", {
+            type: "number", min: 0,
+            value: ama.target || "",
+            onChange: e => draftUpdateSubAmaliyah(eventEditPopup.pId, eventEditPopup.subId, o.value, "target", e.target.value),
+            placeholder: "Target",
+            style: { width: 72, height: 36, padding: "0 6px", borderRadius: 10, border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 700, outline: "none", textAlign: "center" }
+          })
+        ]);
+      }),
+      h("div", { style: { fontSize: 11, color: "#94a3b8", marginTop: 4, marginBottom: 12, fontWeight: 600 } }, "Target boleh kosong. Kosongkan teks = tidak tampil hari itu."),
+      h("button", {
+        onClick: () => setEventEditPopup(null),
+        style: { width: "100%", height: 42, borderRadius: 12, border: "none", background: "#0f172a", color: "#fff", fontWeight: 800, fontSize: 13, cursor: "pointer" }
+      }, "Selesai")
+    ])
+  ]);
+})(),
 genderListModal && h("div", { style: { position:"fixed", inset:0, zIndex:196, display:"flex", alignItems:"center", justifyContent:"center", padding:16 } }, [
   h("div", { onClick: () => setGenderListModal(null), style: { position:"absolute", inset:0, background:"rgba(0,0,0,.5)", backdropFilter:"blur(6px)" } }),
   h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
@@ -4524,15 +4570,9 @@ h("button", {
             h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "JUDUL HEADER"),
             h("input", { type: "text", value: generalDraft.header || "", onChange: e => setGeneralDraft(prev => ({ ...prev, header: e.target.value })), placeholder: DEFAULT_GENERAL.header, style: { width: "100%", height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none" } })
           ]),
-          h("div", { style:{ display:"grid", gridTemplateColumns: "1fr 80px", gap: 8 } }, [
-            h("div", null, [
-              h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "NAMA KEGIATAN"),
-              h("input", { type: "text", value: generalDraft.kegiatan || "", onChange: e => setGeneralDraft(prev => ({ ...prev, kegiatan: e.target.value })), placeholder: DEFAULT_GENERAL.kegiatan, style: { width: "100%", height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none" } })
-            ]),
-            h("div", null, [
-              h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "ICON"),
-              h("input", { type: "text", value: generalDraft.kegiatanIcon || "", onChange: e => setGeneralDraft(prev => ({ ...prev, kegiatanIcon: e.target.value })), placeholder: DEFAULT_GENERAL.kegiatanIcon, style: { width: "100%", height: 40, padding: "0 8px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 18, textAlign: "center", outline: "none" } })
-            ])
+          h("div", null, [
+            h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "NAMA KEGIATAN (footer/teks)"),
+            h("input", { type: "text", value: generalDraft.kegiatan || "", onChange: e => setGeneralDraft(prev => ({ ...prev, kegiatan: e.target.value })), placeholder: DEFAULT_GENERAL.kegiatan, style: { width: "100%", height: 40, padding: "0 12px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600, outline: "none" } })
           ]),
           h("div", null, [
             h("div", { style:{ fontSize: 11, fontWeight: 700, color:"#94a3b8", marginBottom: 4, letterSpacing: "0.04em" } }, "TEKS FOOTER"),
@@ -4548,7 +4588,7 @@ h("button", {
           h("span", null, "🏷️ Program & Sub"),
           h("button", { onClick: draftAddProgram, style: { height: 32, padding: "0 12px", borderRadius: 10, border: "none", background: "#0f172a", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" } }, "➕ Tambah Program")
         ]),
-        h("div", { style:{ fontSize: 11, color:"#94a3b8", marginBottom: 10, lineHeight: 1.5 } }, "Gender per sub · Nama event per program · Event/target diisi per hari di sub."),
+        h("div", { style:{ fontSize: 11, color:"#94a3b8", marginBottom: 10, lineHeight: 1.5 } }, "♂♀ Gender · 📿 Event per sub (centang lalu Edit). Nama event di program."),
         h("div", { style:{ display:"flex", flexDirection: "column", gap: 12, marginBottom: 18 } },
           (configDraft.programs || []).map((p, pIdx) => {
             const th = THEME_PALETTE[pIdx % THEME_PALETTE.length];
@@ -4592,6 +4632,23 @@ h("button", {
                         h("input", { type: "checkbox", checked: !!s.trackGender, onChange: () => draftToggleSubTrackGender(p.id, s.id), style: { width: 12, height: 12, accentColor: "#2563eb" } }),
                         "♂♀"
                       ]),
+                      h("label", {
+                        title: "Aktifkan agenda/event di sub ini",
+                        style: {
+                          display: "inline-flex", alignItems: "center", gap: 3, height: 28, padding: "0 7px", borderRadius: 8,
+                          border: s.enableEvent ? "1px solid #fcd34d" : "1px solid #e2e8f0",
+                          background: s.enableEvent ? "#fffbeb" : "#fff",
+                          fontSize: 10, fontWeight: 800, color: s.enableEvent ? "#92400e" : "#94a3b8", cursor: "pointer", flexShrink: 0
+                        }
+                      }, [
+                        h("input", { type: "checkbox", checked: !!s.enableEvent, onChange: () => draftToggleSubEnableEvent(p.id, s.id), style: { width: 12, height: 12, accentColor: "#d97706" } }),
+                        "📿"
+                      ]),
+                      s.enableEvent && h("button", {
+                        type: "button",
+                        onClick: () => setEventEditPopup({ pId: p.id, subId: s.id }),
+                        style: { height: 28, padding: "0 8px", borderRadius: 8, border: "1px solid #fde68a", background: "#fffbeb", color: "#92400e", fontSize: 10, fontWeight: 800, cursor: "pointer", flexShrink: 0 }
+                      }, "Edit"),
                       hasCustom && h("span", { title: "Jadwal khusus", style:{ fontSize: 10, fontWeight: 800, color: "#7c3aed", background: "#f5f3ff", border: "1px solid #ddd6fe", padding: "2px 5px", borderRadius: 999 } }, "⏱"),
                       h("button", { onClick: () => setSubDeleteConfirm({ program: p.id, subId: s.id, subLabel: s.label || ("Sub " + s.id) }), title: "Hapus sub", style: { width: 28, height: 28, borderRadius: 8, border: "none", background: "rgba(239,68,68,.1)", color: "#dc2626", fontSize: 12, cursor: "pointer" } }, "×")
                     ]),
@@ -4609,33 +4666,6 @@ h("button", {
                             color: on ? "#fff" : "#64748b"
                           }
                         }, o.label.slice(0, 3));
-                      })
-                    ]),
-                    h("div", { style: { marginTop: 5 } }, [
-                      h("div", { style: { fontSize: 9, fontWeight: 800, color: "#92400e", marginBottom: 3 } },
-                        "📿 " + String(p.eventLabel || "Event").toUpperCase() + " (opsional)"),
-                      ...HARI_OPTIONS.filter(o => days.includes(o.value)).map(o => {
-                        const ama = (s.amaliyah && s.amaliyah[String(o.value)]) || { text: "", target: 0 };
-                        return h("div", {
-                          key: "ama-" + o.value,
-                          style: { display: "flex", gap: 4, alignItems: "center", marginBottom: 3 }
-                        }, [
-                          h("span", { style: { width: 28, fontSize: 9, fontWeight: 800, color: "#64748b", flexShrink: 0 } }, o.label.slice(0, 3)),
-                          h("input", {
-                            type: "text",
-                            value: ama.text || "",
-                            onChange: e => draftUpdateSubAmaliyah(p.id, s.id, o.value, "text", e.target.value),
-                            placeholder: "teks event…",
-                            style: { flex: 1, minWidth: 0, height: 26, padding: "0 6px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 11, fontWeight: 600, outline: "none", background: "#fff" }
-                          }),
-                          h("input", {
-                            type: "number", min: 0,
-                            value: ama.target || "",
-                            onChange: e => draftUpdateSubAmaliyah(p.id, s.id, o.value, "target", e.target.value),
-                            placeholder: "×",
-                            style: { width: 52, height: 26, padding: "0 4px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 11, fontWeight: 700, outline: "none", textAlign: "center", background: "#fff" }
-                          })
-                        ]);
                       })
                     ])
                   ]);
