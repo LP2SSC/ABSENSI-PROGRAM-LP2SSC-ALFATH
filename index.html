@@ -5448,12 +5448,12 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
             type: "button",
             onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("L"); } },
             style: { padding: "8px 14px", borderRadius: 12, background: "#eff6ff", border: "1px solid #bfdbfe", fontSize: 12, fontWeight: 700, color: "#1e40af", cursor: progGender.loading ? "wait" : "pointer" }
-          }, "👨 Ikhwan Hadir: " + (progGender.loading ? "…" : progGender.L)),
+          }, "👳🏻 Ikhwan Hadir: " + (progGender.loading ? "…" : progGender.L)),
           h("button", {
             type: "button",
             onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("P"); } },
             style: { padding: "8px 14px", borderRadius: 12, background: "#fdf2f8", border: "1px solid #fbcfe8", fontSize: 12, fontWeight: 700, color: "#9d174d", cursor: progGender.loading ? "wait" : "pointer" }
-          }, "👩 Akhwat Hadir: " + (progGender.loading ? "…" : progGender.P)),
+          }, "🧕🏻 Akhwat Hadir: " + (progGender.loading ? "…" : progGender.P)),
           h("button", {
             type: "button",
             onClick: () => { if (!progGender.loading) { setGenderListSearch(""); setGenderListModal("ALL"); } },
@@ -6168,7 +6168,7 @@ genderListModal && h("div", { style: { position:"fixed", inset:0, zIndex:196, di
   h("div", { style: { position:"relative", width:"100%", maxWidth:460, maxHeight:"88vh", borderRadius:24, background:"#fff", padding:24, boxShadow:"0 20px 60px -12px rgba(0,0,0,.4)", animation:"scaleIn .25s ease", display:"flex", flexDirection:"column" } }, [
     h("button", { onClick: () => setGenderListModal(null), style: { position:"absolute", right:12, top:12, width:32, height:32, borderRadius:999, background:"#f4f4f5", border:"none", color:"#71717a", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 } }, "✕"),
     (() => {
-      const titles = { L: "👨 Ikhwan Hadir", P: "👩 Akhwat Hadir", U: "❓ Belum ditandai", ALL: "✅ Total Hadir" };
+      const titles = { L: "👳🏻 Ikhwan Hadir", P: "🧕🏻 Akhwat Hadir", U: "❓ Belum ditandai", ALL: "✅ Total Hadir" };
       const colors = { L: "#1e40af", P: "#9d174d", U: "#64748b", ALL: "#166534" };
       const bgs = { L: "#eff6ff", P: "#fdf2f8", U: "#f8fafc", ALL: "#f0fdf4" };
       let rows = [];
