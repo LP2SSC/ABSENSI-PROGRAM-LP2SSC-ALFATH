@@ -458,6 +458,7 @@ function isHadirLate(timeStr, lateAfterMin) {
   return tm > Number(lateAfterMin);
 }
 function orderPath(batchKey) { return `${basePath()}/batch_${batchKey}/order`; }
+function orderModePath(batchKey) { return `${basePath()}/batch_${batchKey}/order_mode`; }
 function loadOrderLocal(batchKey) {
   try {
     const raw = localStorage.getItem("absensi_v2_order_" + batchKey);
@@ -836,10 +837,9 @@ function AbsensiApp() {
   const [hadirLate, setHadirLate] = useState({}); // name -> true if late
   const [hadirTimePopup, setHadirTimePopup] = useState(null); // { name }
   const [hadirTimeTemp, setHadirTimeTemp] = useState("");
-  const [orderMode, setOrderMode] = useState(() => {
-    try { return localStorage.getItem("absensi_v2_order_mode_" + roomCode) || "az"; } catch { return "az"; }
-  });
-  const [studentOrder, setStudentOrder] = useState(() => loadOrderLocal(batchKey) || []);
+  const [orderMode, setOrderMode] = useState("az"); // global: az | custom (Firebase)
+  const [studentOrder, setStudentOrder] = useState([]);
+  const skipOrderSave = useRef(true); // cegah write balik saat load dari FB
   const [showSalinFormat2Menu, setShowSalinFormat2Menu] = useState(false);
   const [loadingFb, setLoadingFb] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -1801,40 +1801,6 @@ setDate(wibToday()); setAttendance({}); setIzinReasons({}); setHadirTimes({});
       const grVal = grSnap.val();
       const grMap = (grVal && typeof grVal === "object") ? grVal : {};
       setStudentGroups(grMap); saveGroupsLocal(batchKey, grMap);
-      // order
-      db.ref(orderPath(batchKey)).once("value").then(oSnap => {
-        const ov = oSnap.val();
-        if (Array.isArray(ov) && ov.length) {
-          setStudentOrder(ov);
-          saveOrderLocal(batchKey, ov);
-          // Jika ada urutan tersimpan, aktifkan mode custom
-          try {
-            const m = localStorage.getItem("absensi_v2_order_mode_" + roomCode);
-            if (m === "custom") setOrderMode("custom");
-            else if (!m && ov.length) setOrderMode("custom");
-          } catch { setOrderMode("custom"); }
-        } else {
-          const loc = loadOrderLocal(batchKey);
-          if (Array.isArray(loc) && loc.length) {
-            setStudentOrder(loc);
-            try {
-              const m = localStorage.getItem("absensi_v2_order_mode_" + roomCode);
-              if (m === "custom") setOrderMode("custom");
-            } catch {}
-          } else {
-            setStudentOrder([]);
-          }
-        }
-      }).catch(() => {
-        const loc = loadOrderLocal(batchKey) || [];
-        setStudentOrder(loc);
-        if (loc.length) {
-          try {
-            const m = localStorage.getItem("absensi_v2_order_mode_" + roomCode);
-            if (m === "custom") setOrderMode("custom");
-          } catch {}
-        }
-      });
       studentsLoadedFor.current = batchKey;
       setStudentsLoadedTick(t => t + 1);
     }).catch(() => {
@@ -1913,44 +1879,55 @@ useEffect(() => {
     db.ref(groupsPath(batchKey)).set(studentGroups || {}).catch(() => {});
   }, [studentGroups, batchKey, validSub]);
 
+  // ===== Urutan GLOBAL (Firebase) — semua device/user lihat sama =====
+  useEffect(() => {
+    if (!validSub || !batchKey) {
+      skipOrderSave.current = true;
+      setOrderMode("az");
+      setStudentOrder([]);
+      return;
+    }
+    skipOrderSave.current = true;
+    const oRef = db.ref(orderPath(batchKey));
+    const mRef = db.ref(orderModePath(batchKey));
+    const onOrder = oRef.on("value", snap => {
+      const v = snap.val();
+      skipOrderSave.current = true;
+      if (Array.isArray(v) && v.length) {
+        setStudentOrder(v.map(x => String(x)));
+        saveOrderLocal(batchKey, v);
+      } else {
+        setStudentOrder([]);
+      }
+      setTimeout(() => { skipOrderSave.current = false; }, 150);
+    });
+    const onMode = mRef.on("value", snap => {
+      const v = snap.val();
+      skipOrderSave.current = true;
+      if (v === "custom" || v === "az") setOrderMode(v);
+      else setOrderMode("az");
+      setTimeout(() => { skipOrderSave.current = false; }, 150);
+    });
+    return () => {
+      oRef.off("value", onOrder);
+      mRef.off("value", onMode);
+    };
+  }, [batchKey, validSub]);
+
+  // Simpan ke Firebase saat admin ubah (global)
   useEffect(() => {
     if (!validSub) return;
     if (studentsLoadedFor.current !== batchKey) return;
-    try { localStorage.setItem("absensi_v2_order_mode_batch_" + batchKey, orderMode); } catch {}
+    if (skipOrderSave.current) return;
+    db.ref(orderModePath(batchKey)).set(orderMode === "custom" ? "custom" : "az").catch(() => {});
     if (orderMode === "custom" && studentOrder && studentOrder.length) {
       saveOrderLocal(batchKey, studentOrder);
       db.ref(orderPath(batchKey)).set(studentOrder).catch(() => {});
+    } else if (orderMode === "az") {
+      // mode A-Z: hapus order array opsional biar jelas, atau biarkan (display tetap A-Z)
+      // jangan hapus array supaya custom bisa kembali tanpa atur ulang
     }
   }, [studentOrder, orderMode, batchKey, validSub]);
-
-  // Load order mode per batch when batch changes
-  useEffect(() => {
-    if (!batchKey) return;
-    try {
-      const m = localStorage.getItem("absensi_v2_order_mode_batch_" + batchKey);
-      if (m === "custom" || m === "az") setOrderMode(m);
-      else {
-        // fallback room-level
-        const mr = localStorage.getItem("absensi_v2_order_mode_" + roomCode);
-        if (mr === "custom" || mr === "az") setOrderMode(mr);
-      }
-    } catch {}
-    const loc = loadOrderLocal(batchKey);
-    if (Array.isArray(loc) && loc.length) setStudentOrder(loc);
-  }, [batchKey]);
-  useEffect(() => {
-    if (!roomCode) return;
-    try { localStorage.setItem("absensi_v2_order_mode_" + roomCode, orderMode); } catch {}
-  }, [orderMode, roomCode]);
-
-  // Saat masuk room, muat ulang mode urutan dari localStorage
-  useEffect(() => {
-    if (!roomCode) return;
-    try {
-      const m = localStorage.getItem("absensi_v2_order_mode_" + roomCode);
-      if (m === "custom" || m === "az") setOrderMode(m);
-    } catch {}
-  }, [roomCode]);
 
   useEffect(() => {
     if (!validSub) return;
@@ -4012,19 +3989,27 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
           h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 } }, [
             h("div", null, [
               h("div", { style: { fontSize: 14, fontWeight: 800 } }, "Kelola Anggota — " + batchLabel),
-              h("div", { style: { fontSize: 12, color: "rgba(0,0,0,.4)", fontWeight: 500, marginBottom: 8 } }, `Total ${students.length} orang • Sinkron Firebase`),
+              h("div", { style: { fontSize: 12, color: "rgba(0,0,0,.4)", fontWeight: 500, marginBottom: 8 } }, `Total ${students.length} orang • Urutan: ${orderMode === "custom" ? "Custom (global)" : "A–Z"}`),
               h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 } }, [
                 h("button", {
-                  onClick: () => setOrderMode("az"),
+                  onClick: () => {
+                    skipOrderSave.current = false;
+                    setOrderMode("az");
+                    // push langsung biar semua device ikut
+                    try { db.ref(orderModePath(batchKey)).set("az"); } catch {}
+                  },
                   style: { height: 30, padding: "0 12px", borderRadius: 999, border: orderMode === "az" ? "none" : "1px solid #e2e8f0", background: orderMode === "az" ? "#0f172a" : "#fff", color: orderMode === "az" ? "#fff" : "#64748b", fontWeight: 800, fontSize: 11, cursor: "pointer" }
                 }, "🔤 A–Z"),
                 h("button", {
                   onClick: () => {
+                    const base = applyStudentOrder(students, studentOrder, studentOrder && studentOrder.length ? "custom" : "az");
+                    skipOrderSave.current = false;
                     setOrderMode("custom");
-                    setStudentOrder(prev => {
-                      const base = applyStudentOrder(students, prev, prev && prev.length ? "custom" : "az");
-                      return base;
-                    });
+                    setStudentOrder(base);
+                    try {
+                      db.ref(orderModePath(batchKey)).set("custom");
+                      db.ref(orderPath(batchKey)).set(base);
+                    } catch {}
                   },
                   style: { height: 30, padding: "0 12px", borderRadius: 999, border: orderMode === "custom" ? "none" : "1px solid #e2e8f0", background: orderMode === "custom" ? "#0f172a" : "#fff", color: orderMode === "custom" ? "#fff" : "#64748b", fontWeight: 800, fontSize: 11, cursor: "pointer" }
                 }, "↕️ Custom")
@@ -4049,6 +4034,7 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
               const isL = g === "L" || g === "M" || g === "COWOK" || g === "IKHWAN";
               const isP = g === "P" || g === "F" || g === "CEWEK" || g === "AKHWAT";
               const move = (dir) => {
+                skipOrderSave.current = false;
                 setOrderMode("custom");
                 setStudentOrder(prev => {
                   const cur = applyStudentOrder(students, prev, "custom");
@@ -4058,6 +4044,10 @@ const sheetLabel = getProgramLabel(programConfig, p) + " " + getSubLabel(program
                   if (j < 0 || j >= cur.length) return cur;
                   const next = [...cur];
                   const tmp = next[idx]; next[idx] = next[j]; next[j] = tmp;
+                  try {
+                    db.ref(orderModePath(batchKey)).set("custom");
+                    db.ref(orderPath(batchKey)).set(next);
+                  } catch {}
                   return next;
                 });
               };
